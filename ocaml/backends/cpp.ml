@@ -306,6 +306,8 @@ let cuttlesim_hpp_fname =
   "cuttlesim.hpp"
 
 let fuzzing_library = "<cstdlib>"
+let run_fuzz = "run_fuzz"
+let assert_n = "assert_pred"
 
 let reconstruct_switch action =
   let rec loop v = function
@@ -1470,19 +1472,19 @@ them before writing to the registers.\n"
           p "return snapshot_history;") in
 
     let clear_assert_pred () = 
-      p_fn ~typ:"void" ~name:"clear_assert_pred" ( fun () -> 
-          p "assert_pred = nullptr;") in 
+      p_fn ~typ:"void" ~name:("clear_" ^ assert_n) ( fun () -> 
+          p "%s = nullptr;" assert_n) in 
     
     let set_assert_pred () = 
-      p_fn ~typ:"void" ~name:"set_assert_pred" ~args:"assert_pred_t p" (fun () ->
-          p "assert_pred = p;") in 
-
+      p_fn ~typ:"void" ~name:("set_" ^ assert_n) ~args:"assert_pred_t p" (fun () ->
+          p "%s = p;" assert_n) in 
+    
     let assert_body () = 
-      " if (assert_pred) {
-            if (!assert_pred(snapshot())) {
+       sprintf "if (%s) {
+            if (!%s(snapshot())) {
               std::abort(); 
             }
-          } " in 
+          }" assert_n assert_n in 
 
     let p_run_fuzz name cycle assert_pred = 
       p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles" (fun () ->
@@ -1536,7 +1538,7 @@ them before writing to the registers.\n"
         nl ();
         p_iffuzzer (fun () ->
             p "using assert_pred_t = bool(*)(const snapshot_t&);";
-            p "assert_pred_t assert_pred = nullptr;";
+            p "assert_pred_t %s = nullptr;" assert_n;
             p "std::vector<snapshot_t> snapshot_history;");
         nl ();
 
@@ -1568,7 +1570,7 @@ them before writing to the registers.\n"
             nl ();
             get_snapshots();
             nl ();
-            p_run_fuzz "run_fuzz" "cycle" (assert_body ()); 
+            p_run_fuzz run_fuzz "cycle" (assert_body ()); 
             nl ();  
             set_assert_pred (); 
             nl (); 
