@@ -1460,7 +1460,15 @@ them before writing to the registers.\n"
       p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles" (fun () ->
           p_cycle_loop (fun () -> p "%s();" cycle);
           p "return *this;") in
-    
+
+    let clear_snapshots () = 
+      p_fn ~typ:"void" ~name:"clear_snapshots" ( fun () -> 
+          p "snapshot_history.clear();") in
+
+    let get_snapshots () = 
+      p_fn ~typ:"const std::vector<snapshot_t>&" ~name:"get_snapshots" ~annot:" const" ( fun () -> 
+          p "return snapshot_history;") in
+
     let clear_assert_pred () = 
       p_fn ~typ:"void" ~name:"clear_assert_pred" ( fun () -> 
           p "assert_pred = nullptr;") in 
@@ -1528,7 +1536,8 @@ them before writing to the registers.\n"
         nl ();
         p_iffuzzer (fun () ->
             p "using assert_pred_t = bool(*)(const snapshot_t&);";
-            p "assert_pred_t assert_pred = nullptr;");
+            p "assert_pred_t assert_pred = nullptr;";
+            p "std::vector<snapshot_t> snapshot_history;");
         nl ();
 
         p "public:";
@@ -1555,6 +1564,10 @@ them before writing to the registers.\n"
             nl ();
             p_trace "trace_randomized" "cycle_randomized"); 
         p_iffuzzer (fun () ->
+            clear_snapshots(); 
+            nl ();
+            get_snapshots();
+            nl ();
             p_run_fuzz "run_fuzz" "cycle" (assert_body ()); 
             nl ();  
             set_assert_pred (); 
