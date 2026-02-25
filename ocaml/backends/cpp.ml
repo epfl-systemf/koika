@@ -305,6 +305,8 @@ let cuttlesim_hpp =
 let cuttlesim_hpp_fname =
   "cuttlesim.hpp"
 
+let fuzzing_library = "<cstdlib>"
+
 let reconstruct_switch action =
   let rec loop v = function
     | Extr.If (_, _,
@@ -389,6 +391,9 @@ let compile (type pos_t var_t fn_name_t rule_name_t reg_t ext_fn_t)
 
   let p_ifnminimal pbody =
     p_ifdef "ndef SIM_MINIMAL" pbody in
+  
+  let p_iffuzzer pbody = 
+    p_ifdef "def SIM_FUZZER" pbody in 
 
   let p_scoped header ?(terminator="") pbody =
     p "%s {" header;
@@ -679,7 +684,8 @@ let compile (type pos_t var_t fn_name_t rule_name_t reg_t ext_fn_t)
     if program_info.pi_needs_multiprecision then (
       p "#define NEEDS_BOOST_MULTIPRECISION";
       nl ());
-    p "#include \"%s\"" cuttlesim_hpp_fname in
+    p "#include \"%s\"" cuttlesim_hpp_fname; 
+    p "#include %s" fuzzing_library in
 
   let iter_registers f regs =
     let sigs = Array.map hpp.cpp_register_sigs regs in
@@ -1454,6 +1460,29 @@ them before writing to the registers.\n"
       p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles" (fun () ->
           p_cycle_loop (fun () -> p "%s();" cycle);
           p "return *this;") in
+    
+    let clear_assert_pred () = 
+      p_fn ~typ:"void" ~name:"clear_assert_pred" ( fun () -> 
+          p "assert_pred = nullptr;") in 
+    
+    let set_assert_pred () = 
+      p_fn ~typ:"void" ~name:"set_assert_pred" ~args:"assert_pred_t p" (fun () ->
+          p "assert_pred = p;") in 
+
+    let assert_body () = 
+      " if (assert_pred) {
+            if (!assert_pred(snapshot())) {
+              std::abort(); 
+            }
+          } " in 
+
+    let p_run_fuzz name cycle assert_pred = 
+      p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles" (fun () ->
+          p_cycle_loop (fun () ->
+              p "%s();" cycle;
+              nl (); 
+              p "%s" assert_pred);
+          p "return *this;") in
 
     let p_trace name cycle =
       p_fn ~typ:run_typ ~name
@@ -1469,11 +1498,12 @@ them before writing to the registers.\n"
               p "latest = current;");
           p "return *this;") in
 
+
     p_sim_class (fun () ->
         p "public:";
         p_state_t ();
         nl ();
-        p_snapshot_t ();
+        p_snapshot_t (); 
         nl ();
 
         p "protected:";
@@ -1495,6 +1525,10 @@ them before writing to the registers.\n"
               (max 0 (List.length hpp.cpp_rules - 1)));
         nl ();
         iter_sep nl p_rule hpp.cpp_rules;
+        nl ();
+        p_iffuzzer (fun () ->
+            p "using assert_pred_t = bool(*)(const snapshot_t&);";
+            p "assert_pred_t assert_pred = nullptr;");
         nl ();
 
         p "public:";
@@ -1519,7 +1553,15 @@ them before writing to the registers.\n"
             nl ();
             p_trace "trace" "cycle";
             nl ();
-            p_trace "trace_randomized" "cycle_randomized")) in
+            p_trace "trace_randomized" "cycle_randomized"); 
+        p_iffuzzer (fun () ->
+            p_run_fuzz "run_fuzz" "cycle" (assert_body ()); 
+            nl ();  
+            set_assert_pred (); 
+            nl (); 
+            clear_assert_pred (); 
+            nl () )) in 
+ 
 
   let with_output_to_buffer (pbody: unit -> unit) =
     let buf = set_buffer (Buffer.create 4096) in
