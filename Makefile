@@ -41,6 +41,9 @@ examples: configure
 tests: configure
 	$(verbose)$(MAKE) -C tests all
 
+.PHONY: fuzzer 
+fuzzer: configure
+	$(verbose)$(MAKE) -C examples cuttlec
 
 #################
 # Whole project #
@@ -60,7 +63,7 @@ dune-all: coq ocaml
 	@printf "\n== Completing full build =="
 	dune build @all
 
-all: coq ocaml examples tests readme;
+all: coq ocaml examples tests fuzzer readme;
 
 clean-%: FORCE %/
 	$(verbose)$(MAKE) -C $* clean

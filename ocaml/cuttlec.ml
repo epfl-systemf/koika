@@ -7,10 +7,10 @@ type frontend =
   CoqPkg | LV | ExtractedML
 
 type backend =
-  [`Coq | `Verilator | `Makefile | `Verilog | `Dot | `Hpp | `Cpp | `Opt]
+  [`Coq | `Verilator | `Makefile | `Verilog | `Dot | `Hpp | `Cpp | `Opt | `Harness]
 
 let all_backends (f: frontend) : backend list =
-  let shared = [`Verilator; `Makefile; `Verilog; `Dot; `Hpp; `Cpp] in
+  let shared = [`Verilator; `Makefile; `Verilog; `Dot; `Hpp; `Cpp; `Harness] in
   match f with
   | LV -> `Coq :: shared
   | CoqPkg | ExtractedML -> shared
@@ -22,7 +22,8 @@ let backends : (backend * (string * string)) list =
    (`Opt, ("opt", ".opt"));
    (`Coq, ("coq", "_coq.v"));
    (`Verilog, ("verilog", "_verilog.v"));
-   (`Verilator, ("verilator", "verilator.cpp"))]
+   (`Verilator, ("verilator", "verilator.cpp")); 
+   (`Harness, ("harness", ".cpp"))]
 
 let name_of_backend backend =
   match backend with
@@ -90,6 +91,9 @@ let run_backend' (backend: backend) cnf pkg =
   | `Makefile ->
      with_output_to_file (output_fname backend cnf pkg)
        Backends.Makefile.main pkg.pkg_modname
+  | `Harness -> 
+      let cpp = Lazy.force pkg.pkg_cpp in
+      Backends.Harness.main cnf.cnf_dst_dpath pkg.pkg_modname cpp
   | (`Hpp | `Cpp | `Opt) as kd ->
      let cpp = Lazy.force pkg.pkg_cpp in
      Backends.Cpp.write_output cnf.cnf_dst_dpath kd cpp

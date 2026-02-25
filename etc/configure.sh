@@ -34,6 +34,7 @@ template_v='(subdir %s.v.d
       %s.kpkg %s.cpp
       %s.hpp %s.verilator.cpp
       %s.v %s.dot
+      harness.cpp
       cuttlesim.hpp verilator.hpp
       Makefile)
     (action
@@ -47,6 +48,7 @@ template_lv='(subdir %s.lv.d
       %s_coq.v %s.cpp
       %s.hpp %s.verilator.cpp
       %s.v %s.dot
+      harness.cpp
       cuttlesim.hpp verilator.hpp
       Makefile)
     (action
