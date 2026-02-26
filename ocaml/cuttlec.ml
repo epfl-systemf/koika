@@ -68,8 +68,7 @@ type package = {
     pkg_modname: string;
     pkg_lv: Lv.resolved_unit lazy_t;
     pkg_cpp: Backends.Cpp.cpp_output_t lazy_t;
-    pkg_graph: Cuttlebone.Graphs.circuit_graph lazy_t;
-    pkg_cpp_in: (a, b, c, d, e, f) Backends.Cpp.cpp_input_t lazy_t;
+    pkg_graph: Cuttlebone.Graphs.circuit_graph lazy_t; 
   }
 
 exception UnsupportedOutput of string
@@ -93,9 +92,8 @@ let run_backend' (backend: backend) cnf pkg =
      with_output_to_file (output_fname backend cnf pkg)
        Backends.Makefile.main pkg.pkg_modname
   | `Harness -> 
-      let cpp_in = Lazy.force pkg.pkg_cpp_in in
       let cpp_out = Lazy.force pkg.pkg_cpp in
-      Backends.Harness.main cnf.cnf_dst_dpath cpp_out.co_modname cpp_in 
+      Backends.Harness.main cnf.cnf_dst_dpath cpp_out.co_modname
   | (`Hpp | `Cpp | `Opt) as kd ->
      let cpp = Lazy.force pkg.pkg_cpp in
      Backends.Cpp.write_output cnf.cnf_dst_dpath kd cpp
@@ -190,7 +188,7 @@ let run_lv (backends: backend list) (cnf: config) =
       { pkg_modname = c_unit.c_modname;
         pkg_lv = lazy resolved;
         pkg_cpp = lazy Backends.Cpp.(compile (input_of_compile_unit c_unit));
-        pkg_cpp_in = lazy (Backends.Cpp.(input_of_compile_unit c_unit)); 
+       
         pkg_graph = lazy (Cuttlebone.Graphs.graph_of_compile_unit c_unit) }
   with Lv.Errors.Errors errs ->
     print_errors_and_warnings errs;
@@ -201,7 +199,6 @@ let run_ip (backends: backend list) cnf (ip: Cuttlebone.Extr.interop_package_t) 
     { pkg_modname = Cuttlebone.Util.string_of_coq_string ip.ip_koika.koika_module_name;
       pkg_lv = lazy (raise (UnsupportedOutput "Coq output is only supported from LV input"));
       pkg_cpp = lazy Backends.Cpp.(compile (input_of_sim_package ip.ip_koika ip.ip_sim));
-      pkg_cpp_in = lazy (Backends.Cpp.(input_of_sim_package ip.ip_koika ip.ip_sim)); 
       pkg_graph = lazy (Cuttlebone.Graphs.graph_of_verilog_package ip.ip_koika ip.ip_verilog) }
 
 let run_dynlink (backends: backend list) (cnf: config) =

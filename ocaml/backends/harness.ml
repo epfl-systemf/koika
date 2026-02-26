@@ -41,40 +41,40 @@ let h_description (modname: string) () : unit =
     p "// %s : to run the simulation for n cycles with fuzzing support" Cpp.run_fuzz
 
 
-let string_of_reg_kind (k : Extr.register_kind) : string =
+(* let string_of_reg_kind (k : Extr.register_kind) : string =
   match k with
   | Value -> "Value"
   | Wire -> "Wire"
   | Register -> "Register"
-  | EHR -> "EHR"
+  | EHR -> "EHR" *)
 
-let h_registers (cu : (_,_,_,_,_,_) cpp_input_t) () : unit =
+(* let h_registers (cu : (_,_,_,_,_,_) cpp_input_t) () : unit =
   p "// Registers:";
   Array.iter (fun r ->
     let sg = cu.cpp_register_sigs r in
     let k = cu.cpp_register_kinds r in
     p "//  - %s (%s)" sg.reg_name (string_of_reg_kind k)
   ) cu.cpp_registers;
-  nl ()
+  nl () *)
 
-let h_cpp (modname: string) (ci : (_,_,_,_,_,_) cpp_input_t) () =
+let h_cpp (modname: string) () =
     let preamble_buf = with_output_to_buffer (h_preamble modname) in 
     let description_buf = with_output_to_buffer (h_description modname) in
-    let registers_buf = with_output_to_buffer (h_registers ci) in
+    (* let registers_buf = with_output_to_buffer (h_registers ci) in *)
     p_buffer preamble_buf;
-    p_buffer description_buf;
-    p_buffer registers_buf
-    
-let write_harness_cpp (target_dpath : string) (modname : string) (ci :(_,_,_,_,_,_) cpp_input_t): unit =
+    p_buffer description_buf
+    (* p_buffer registers_buf *)
+
+let write_harness_cpp (target_dpath : string) (modname : string) : unit =
   let fpath = Filename.concat target_dpath harness_cpp_fname in
-  let out_buf = with_output_to_buffer (h_cpp modname ci) in
+  let out_buf = with_output_to_buffer (h_cpp modname) in
   with_output_to_file fpath Buffer.output_buffer out_buf
 
   
-let main target_dpath (co_modname : string) (ci : (_,_,_,_,_,_) cpp_input_t) =
-  write_harness_cpp target_dpath co_modname ci
+let main target_dpath (co_modname : string)  =
+  write_harness_cpp target_dpath co_modname 
   
-  (*/* DESCRIPTION : TO DO 1
+  (* DESCRIPTION : TO DO 1
     These are the instructions needed to interact with the fuzzer and the implementation under test. 
     Be careful when defining the input format of the seed file, it needs to be consistent with the expected input format. 
     Specifically for this file: 
@@ -82,5 +82,4 @@ let main target_dpath (co_modname : string) (ci : (_,_,_,_,_,_) cpp_input_t) =
     
     helper methods and explanations: 
     run_fuzz() : to invoke simulation 
-    set_assert_pred() : to set assertion predicate 
-    */ *)
+    set_assert_pred() : to set assertion predicate *) 
