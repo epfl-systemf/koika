@@ -47,18 +47,46 @@ let h_description (modname: string) () : unit =
     nl ();
     p "// %s : to run the simulation for n cycles with fuzzing support" Cpp.run_fuzz
 
-let iter_registers (cu : (_,_,_,_,_,_) cpp_input_t) f =
-  Array.iter (fun r ->
-    let sg = cu.cpp_register_sigs r in
-    let typ = reg_type sg in 
-    f r sg typ) cu.cpp_registers
+type reg_layout = {
+  name : string;
+  typ  : typ; 
+  kind : Extr.register_kind;
+  bits : int;
+  bytes: int;
+  off  : int;
+}
+
+let register_layouts (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) : reg_layout list =
+  let (_final_off, acc_rev) =
+    Array.fold_left (fun (off, acc) r ->
+      let kind = cu.cpp_register_kinds r in
+      (* keep your current policy: only Value regs *)
+      match kind with
+      | Extr.Value ->
+          let sg = cu.cpp_register_sigs r in
+          let typ = reg_type sg in
+          let bits = typ_sz typ in
+          let bytes = (bits + 7) / 8 in
+          let entry = { name = sg.reg_name; typ; kind; bits; bytes; off } in
+          (off + bytes, entry :: acc)
+      | _ ->
+          (off, acc)
+    ) (0, []) cu.cpp_registers
+  in
+  List.rev acc_rev
+let register_kind_to_string kind = 
+  match kind with
+  | Extr.Value -> "value"
+  | Extr.Wire -> "wire"
+  | Extr.Register -> "register"
+  | Extr.EHR -> "ehr"
 
 let h_registers (cu : (_,_,_,_,_,_) cpp_input_t) () : unit =
-  p "// Input Registers:";
-  iter_registers cu (fun r sg typ ->
-     let string_of_typ = typ_to_string typ in
-     p "//  - %s : %s" sg.reg_name string_of_typ
-  );
+  p "// Registers:";
+  List.iter (fun r ->
+     let string_of_typ = typ_to_string r.typ in
+     p "//  - %s : %s (kind: %s)" r.name string_of_typ (register_kind_to_string r.kind)
+  ) (register_layouts cu);
   nl (); 
   p "// The input format of the input seed should be consistent with the input format expected by the module"
 
@@ -86,55 +114,55 @@ let h_static_seed_file () : unit =
   p "   }";
   p "   fclose(f); // close file"
 
-
-let register_sizes (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) : (string * int * int * int) list =
-  let (_, acc_rev) = Array.fold_left (fun (off, acc) r ->
-    let sg = cu.cpp_register_sigs r in
-    let bits = typ_sz (reg_type sg) in
-    let bytes = (bits + 7) / 8 in
-    let entry = (sg.reg_name, bits, bytes, off) in 
-    (off + bytes, entry :: acc) 
-  ) (0, [] ) cu.cpp_registers in 
-  List.rev acc_rev
-
 let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
-  let register_sizes_ = register_sizes cu in
-  let total_input_size = List.fold_left (fun acc (_,_, sz,_) -> acc + sz) 0 register_sizes_ in (* could I just use last offset of register_sizes + last byte value ?*)
+  let register_sizes_ = register_layouts cu in
+  let total_input_size = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 register_sizes_ in (* could I just use last offset of register_sizes + last byte value ?*)
   p "// Total input size: %d bytes" total_input_size; 
-  List.iter (fun (nm, bits, _, _) -> 
-    p "   uint%d_t %s = 0;" bits nm; (* is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
-    p "   const std::size_t expected_bytes =%d;" total_input_size; 
+  List.iter (fun (r : reg_layout) -> 
+    p "   uint%d_t %s = 0;" (r.bytes * 8) r.name; (* need to round up, is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
   ) register_sizes_;
+  p "   const std::size_t expected_bytes =%d;" total_input_size; 
   p "   if (buf.size() < expected_bytes) {"; (* this or abort when using the wrong size ? *)
   p "     buf.resize(expected_bytes, 0);";
   p "   } else if (buf.size() > expected_bytes) {";
   p "     buf.resize(expected_bytes);";
   p "   }"; 
-  List.iter (fun (nm, bits, bytes, off) -> 
-    p "   for (std::size_t i = 0; i < %d; ++i) {" bytes;
-    p "     %s |= uint%d_t(buf[%d + i]) << (8 * i);" nm bits off;
+  List.iter (fun (r : reg_layout) -> 
+    p "   for (std::size_t i = 0; i < %d; ++i) {" r.bytes;
+    p "     %s |= uint%d_t(buf[%d + i]) << (8 * i);" r.name (r.bytes * 8) r.off;
     p "   }"; 
-    nl (); 
+    nl ();
   ) register_sizes_
 
 let sim_name = "st"
 
 (* TO DO AUTO ASSIGN WHATEVER WAS READ OUT, need case distinction on all 4 possible types, reg, array, enum, struct
 check if method already exists*)
-let h_simulator_setup () : unit = 
+
+  let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
+  let register_sizes_ = register_layouts cu in
+  List.iter (fun (r : reg_layout) -> 
+    match r.typ with 
+    | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" sim_name r.name r.bits r.name
+    | _ -> p " // on TODO list"
+  ) register_sizes_
+
+let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
+  let assign_val_buf = with_output_to_buffer (assign_val cu) in
   p "    simulator::state_t %s = simulator::initial_state();" sim_name;
   p "    simulator sim(st); "; 
   p "    sim.set_assert_pred([](const snapshot_t& snap) -> bool { // define assertions as lambda function for now"; 
   p "   return snap.state.r0.v != 0; " ; 
   p "   });"; 
   p "   uint64_t ncycles = 1000; "; 
+  p_buffer assign_val_buf; 
   p "   sim.%s(ncycles); // run_fuzz is fuzzing method" Cpp.run_fuzz
 
 let h_main (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
   let p_ext_fun = with_output_to_buffer h_used_fun in
   let p_static_seed = with_output_to_buffer h_static_seed_file in
   let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in) in
-  let h_sim = with_output_to_buffer h_simulator_setup in
+  let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
   p_buffer p_ext_fun;
   p "int main(int argc, char **argv) {";
   nl (); 
