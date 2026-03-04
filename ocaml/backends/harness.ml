@@ -27,9 +27,9 @@ let h_preamble (modname: string) () : unit =
     p "#include \"%s.hpp\"" modname;
     nl ()
 
-let h_used_fun () : unit = 
+let h_used_fun (modname : string)() : unit = 
  p "struct extfuns {};";
- p "using simulator = module_collatz<extfuns>;"; 
+ p "using simulator = module_%s<extfuns>;" modname; 
  p "using snapshot_t = simulator::snapshot_t;";
  p "using state_t = simulator::state_t;"
 
@@ -119,7 +119,7 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
   let total_input_size = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 register_sizes_ in (* could I just use last offset of register_sizes + last byte value ?*)
   p "// Total input size: %d bytes" total_input_size; 
   List.iter (fun (r : reg_layout) -> 
-    p "   uint%d_t %s = 0;" (r.bytes * 8) r.name; (* need to round up, is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
+    p "   prims::bits<%d> %s = prims::bits<%d>::mk(0);" (r.bytes * 8) r.name (r.bytes * 8); (* need to round up, is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
   ) register_sizes_;
   p "   const std::size_t expected_bytes =%d;" total_input_size; 
   p "   if (buf.size() < expected_bytes) {"; (* this or abort when using the wrong size ? *)
@@ -130,6 +130,8 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
   List.iter (fun (r : reg_layout) -> 
     p "   for (std::size_t i = 0; i < %d; ++i) {" r.bytes;
     p "     %s |= uint%d_t(buf[%d + i]) << (8 * i);" r.name (r.bytes * 8) r.off;
+    p "     auto b = prims::widen<%d>(prims::bits<8>::mk(buf[i]));" (r.bytes * 8);
+    p "     %s = %s | (b << (8 * i)); " r.name r.name;
     p "   }"; 
     nl ();
   ) register_sizes_
@@ -144,22 +146,23 @@ check if method already exists*)
   List.iter (fun (r : reg_layout) -> 
     match r.typ with 
     | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" sim_name r.name r.bits r.name
+    | Array_t _ -> p " %s.%s = prims::unpack<decltyp>(%s); " sim_name r.name r.name
     | _ -> p " // on TODO list"
   ) register_sizes_
 
 let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   let assign_val_buf = with_output_to_buffer (assign_val cu) in
   p "    simulator::state_t %s = simulator::initial_state();" sim_name;
+  p_buffer assign_val_buf; 
   p "    simulator sim(st); "; 
   p "    sim.set_assert_pred([](const snapshot_t& snap) -> bool { // define assertions as lambda function for now"; 
-  p "   return snap.state.r0.v != 0; " ; 
+  p "   return true; // set assertion predicate here" ; 
   p "   });"; 
   p "   uint64_t ncycles = 1000; "; 
-  p_buffer assign_val_buf; 
   p "   sim.%s(ncycles); // run_fuzz is fuzzing method" Cpp.run_fuzz
 
-let h_main (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
-  let p_ext_fun = with_output_to_buffer h_used_fun in
+let h_main (modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
+  let p_ext_fun = with_output_to_buffer (h_used_fun modname) in
   let p_static_seed = with_output_to_buffer h_static_seed_file in
   let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in) in
   let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
@@ -180,7 +183,7 @@ let h_cpp (modname: string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
     p_buffer preamble_buf;
     p_buffer description_buf; 
     p_buffer registers_buf;
-    h_main cpp_in ()
+    h_main modname cpp_in ()
 
 let write_harness_cpp (target_dpath : string) (modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t): unit =
   let fpath = Filename.concat target_dpath harness_cpp_fname in
