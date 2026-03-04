@@ -28,7 +28,7 @@ let h_preamble (modname: string) () : unit =
     nl ()
 
 let h_used_fun () : unit = 
- p "struct extfuns {}";
+ p "struct extfuns {};";
  p "using simulator = module_collatz<extfuns>;"; 
  p "using snapshot_t = simulator::snapshot_t;";
  p "using state_t = simulator::state_t;"
@@ -125,9 +125,9 @@ let h_simulator_setup () : unit =
   p "    simulator::state_t %s = simulator::initial_state();" sim_name;
   p "    simulator sim(st); "; 
   p "    sim.set_assert_pred([](const snapshot_t& snap) -> bool { // define assertions as lambda function for now"; 
-  p "    // example assertion predicate that checks if r0 is even"; 
   p "   return snap.state.r0.v != 0; " ; 
   p "   });"; 
+  p "   uint64_t ncycles = 1000; "; 
   p "   sim.%s(ncycles); // run_fuzz is fuzzing method" Cpp.run_fuzz
 
 let h_main (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
