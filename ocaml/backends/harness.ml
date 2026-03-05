@@ -129,8 +129,7 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
   p "   }"; 
   List.iter (fun (r : reg_layout) -> 
     p "   for (std::size_t i = 0; i < %d; ++i) {" r.bytes;
-    p "     %s |= uint%d_t(buf[%d + i]) << (8 * i);" r.name (r.bytes * 8) r.off;
-    p "     auto b = prims::widen<%d>(prims::bits<8>::mk(buf[i]));" (r.bytes * 8);
+    p "     auto b = prims::widen<%d>(prims::bits<8>::mk(buf[%d + i]));" (r.bytes * 8) r.off;
     p "     %s = %s | (b << (8 * i)); " r.name r.name;
     p "   }"; 
     nl ();
@@ -146,8 +145,7 @@ check if method already exists*)
   List.iter (fun (r : reg_layout) -> 
     match r.typ with 
     | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" sim_name r.name r.bits r.name
-    | Array_t _ -> p " %s.%s = prims::unpack<decltyp>(%s); " sim_name r.name r.name
-    | _ -> p " // on TODO list"
+    |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " sim_name r.name sim_name r.name r.name (* is this sufficient ?*)
   ) register_sizes_
 
 let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
@@ -193,9 +191,4 @@ let write_harness_cpp (target_dpath : string) (modname : string) (cpp_in : (_,_,
   
 let main target_dpath (co_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t)  =
   write_harness_cpp target_dpath co_modname cpp_in
-  (* let typ_of_value = function
-  | Bits bs -> Bits_t (Array.length bs)
-  | Enum (sg, _) -> Enum_t sg
-  | Struct (sg, _) -> Struct_t sg
-  | Array (sg, _) -> Array_t sg*)
-
+ 
