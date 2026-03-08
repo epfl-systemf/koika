@@ -4,6 +4,14 @@ open Common
 open Cpp
 
 let harness_cpp_fname = "harness.cpp"
+let n_sim_init = "st"
+let n_sim = "sim" 
+
+let n_decode_fn = "decode_path_for"
+
+let n_assert_fn = "assert_fn"
+
+let n_crashlogP = "CrashLogPath"
 let libraries = ["<vector>"; "<cstdio>";  "<cstdint>";  "<cassert>"]
 
 (* COPIED OVER FOR NOW, THINK OF BETTER SOLUTION ? don't want to change cpp.ml too much*)
@@ -14,6 +22,14 @@ let p fmt = pk nl fmt
 let pr fmt = pk ignore fmt 
 let p_buffer b = Buffer.add_buffer !buffer b 
 let set_buffer b = let b' = !buffer in buffer := b; b' 
+
+  let p_scoped header ?(terminator="") pbody =
+    p "%s {" header;
+    let r = pbody () in
+    p "}%s" terminator;
+    r 
+let p_fn ~typ ~name ?(args="") ?(annot="") pbody =
+    p_scoped (sprintf "%s %s(%s)%s" typ name args annot) pbody 
 
 let with_output_to_buffer (pbody: unit -> unit) =
     let buf = set_buffer (Buffer.create 4096) in
@@ -27,11 +43,12 @@ let h_preamble (modname: string) () : unit =
     p "#include \"%s.hpp\"" modname;
     nl ()
 
-let h_used_fun (modname : string)() : unit = 
+let h_global (modname : string)() : unit = 
  p "struct extfuns {};";
  p "using simulator = module_%s<extfuns>;" modname; 
  p "using snapshot_t = simulator::snapshot_t;";
- p "using state_t = simulator::state_t;"
+ p "using state_t = simulator::state_t;"; 
+ p "static std::string %s = \"\";" n_crashlogP
 
 
 let h_description (modname: string) () : unit =
@@ -91,15 +108,24 @@ let h_registers (cu : (_,_,_,_,_,_) cpp_input_t) () : unit =
   p "// The input format of the input seed should be consistent with the input format expected by the module"
 
 let h_static_seed_file () : unit = 
-  p "   if (argc != 2) return 1;"; 
+  p "   bool replay = false;"; 
+  p "   const char *input_path = nullptr;";
   nl (); 
-  p "   const char *input_path = argv[1]; // input harness file path" ; 
-  p "   FILE *f = fopen(input_path, \"rb\"); // read in binary mode" ; 
-  nl ();  
-  p "   if (!f) {"; 
-  p "       fprintf(stderr, \"Error: unable to open %%s\\n\", input_path);" ; 
-  p "       return 1;";
-  p "   } "; 
+  p " if (argc == 3 && strcmp(argv[1], \"--replay\") == 0) {"; 
+  p "     replay = true; "; 
+  p "      input_path = argv[2];"; 
+  p " } else if (argc == 2) {"; 
+  p "     input_path = argv[1]; ";  
+  p " } else {"; 
+  p "     fprintf(stderr, \"Usage: %%s [--replay] <input_file>\\n\", argv[0]);"; 
+  p "     return 1;"; 
+  p " }"; 
+  nl (); 
+  p " FILE *f = fopen(input_path, \"rb\");";  
+  p " if (!f) {"; 
+  p "     fprintf(stderr, \"Error: unable to open %%s\\n\", input_path);"; 
+  p "     return 1;"; 
+  p " }";
   nl (); 
   p "   std::vector<uint8_t> buf; "; 
   p "   fseek(f, 0, SEEK_END); // move to end of file" ; 
@@ -135,52 +161,106 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
     nl ();
   ) register_sizes_
 
-let sim_name = "st"
 
-(* TO DO AUTO ASSIGN WHATEVER WAS READ OUT, need case distinction on all 4 possible types, reg, array, enum, struct
-check if method already exists*)
-
-  let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
+let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   let register_sizes_ = register_layouts cu in
   List.iter (fun (r : reg_layout) -> 
     match r.typ with 
-    | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" sim_name r.name r.bits r.name
-    |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " sim_name r.name sim_name r.name r.name (* is this sufficient ?*)
+    | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" n_sim_init r.name r.bits r.name
+    |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " n_sim_init r.name n_sim_init r.name r.name (* is this sufficient ?*)
   ) register_sizes_
 
 let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   let assign_val_buf = with_output_to_buffer (assign_val cu) in
-  p "    simulator::state_t %s = simulator::initial_state();" sim_name;
+  p "    simulator::state_t %s = simulator::initial_state();" n_sim_init;
   p_buffer assign_val_buf; 
-  p "    simulator sim(st); "; 
-  p "    sim.set_assert_pred([](const snapshot_t& snap) -> bool { // define assertions as lambda function for now"; 
-  p "   return true; // set assertion predicate here" ; 
-  p "   });"; 
+  p "    simulator %s(st); " n_sim;
+  p "    %s.set_assert_pred(%s);" n_sim n_assert_fn;
   p "   uint64_t ncycles = 1000; "; 
-  p "   sim.%s(ncycles); // run_fuzz is fuzzing method" Cpp.run_fuzz
+  p "   %s.%s(ncycles, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz
+
+let replay_block () = 
+    p " if (replay) { ";
+    p "    %s = %s(input_path);" n_crashlogP n_decode_fn;
+    p "    fprintf(stderr, \"Replaying input from %%s\\n\", input_path);"; 
+    p "    dump_state(\"Initial State\", %s);" n_sim_init;
+    p "    dump_state(\"Final State\", %s.snapshot().state);" n_sim; 
+    p "}"
+
+
+let decode_fn () = 
+  p_fn ~typ:"static std::string " ~name:n_decode_fn ~args:"const char* input_path" (fun () ->
+    p "    std::string in_path(input_path ? input_path : \"\");";
+    p "    return in_path + \"_decoded\";";
+  )
+
+let assert_fn () =
+  p_fn ~typ:"static bool " ~name:n_assert_fn ~args:"const snapshot_t& snap" (fun () ->
+    p "    return true; // default predicate, can be overridden by user";
+  )
+
+let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
+  p_fn ~typ:"static void " ~name:"dump_state" ~args:"const char* label, const state_t& st" (fun () ->
+    p "    FILE* out = fopen(%s.c_str(), \"a\");" n_crashlogP ;
+    p "    if (!out) {";
+    p "        fprintf(stderr, \"Failed to open %%s: %%s\\n\", %s.c_str(), strerror(errno));" n_crashlogP;
+    p "        out = stderr;";
+    p "    }";
+    p "    if (!out) out = stderr;";
+    p "    fprintf(out, \"=== %%s ===\\n\", label);";
+        List.iter (fun (r : reg_layout) ->
+      p "    {";
+      p "      auto packed = prims::pack(st.%s);" r.name;
+      if r.bits <= 32 then
+        p "      fprintf(out, \"%s[%d] = 0x%%08x\\n\", (unsigned)packed.v);" r.name r.bits
+      else if r.bits <= 64 then
+        p "      fprintf(out, \"%s[%d] = 0x%%016llx\\n\", (unsigned long long)packed.v);" r.name r.bits
+      else begin
+        p "      fprintf(out, \"%s[%d] = 0x\");" r.name r.bits;
+        p "      for (int i = %d - 1; i >= 0; --i)" ((r.bits + 7) / 8);
+        p "        fprintf(out, \"%%02x\", (unsigned char)packed.v[i]);";
+        p "      fprintf(out, \"\\n\");"
+      end;
+      p "    }";
+    ) (register_layouts cu);
+    p "    if (out != stderr) fclose(out);";
+  )
 
 let h_main (modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
-  let p_ext_fun = with_output_to_buffer (h_used_fun modname) in
   let p_static_seed = with_output_to_buffer h_static_seed_file in
   let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in) in
   let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
-  p_buffer p_ext_fun;
-  p "int main(int argc, char **argv) {";
-  nl (); 
-  p_buffer p_static_seed; 
-  p_buffer input_siz_cal; 
-  p_buffer h_sim;
-  p "  return 0;";
-  p "}"
+  let replay_blk = with_output_to_buffer replay_block in
+  p_fn ~typ:"int" ~name:"main" ~args:"int argc, char **argv" (fun () ->
+    nl ();  
+    p_buffer p_static_seed; 
+    nl (); 
+    p_buffer input_siz_cal; 
+    nl (); 
+    p_buffer h_sim;
+    nl (); 
+    p_buffer replay_blk; 
+    nl (); 
+    p "  return 0;"
+  )
 
 
 let h_cpp (modname: string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
     let preamble_buf = with_output_to_buffer (h_preamble modname) in 
     let description_buf = with_output_to_buffer (h_description modname) in
     let registers_buf = with_output_to_buffer (h_registers cpp_in) in 
+    let p_decode_fn = with_output_to_buffer decode_fn in
+    let p_global = with_output_to_buffer (h_global modname) in
+    let assert_fn_buf = with_output_to_buffer assert_fn in
+    let state_dump_fn_buf = with_output_to_buffer (state_dump_fn cpp_in) in
     p_buffer preamble_buf;
     p_buffer description_buf; 
     p_buffer registers_buf;
+    p_buffer p_global; 
+    nl (); 
+    p_buffer p_decode_fn; 
+    p_buffer assert_fn_buf;
+    p_buffer state_dump_fn_buf;
     h_main modname cpp_in ()
 
 let write_harness_cpp (target_dpath : string) (modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t): unit =
