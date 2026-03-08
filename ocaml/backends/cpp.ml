@@ -1482,12 +1482,13 @@ them before writing to the registers.\n"
     let assert_body () = 
        sprintf "if (%s) {
             if (!%s(snapshot())) {
-              std::abort(); 
+              if (abort_on_failure) std::abort(); 
+              return *this; 
             }
           }" assert_n assert_n in 
 
     let p_run_fuzz name cycle assert_pred = 
-      p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles" (fun () ->
+      p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles, bool abort_on_failure" (fun () ->
           p_cycle_loop (fun () ->
               p "%s();" cycle;
               nl (); 
