@@ -37,14 +37,16 @@ let with_output_to_buffer (pbody: unit -> unit) =
     set_buffer buf 
  
     (* COPY STOP*)
-let h_preamble (modname: string) () : unit =
+let h_preamble (modname: string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
     nl ();
     List.iter (fun lib -> p "#include %s" lib) libraries; 
     p "#include \"%s.hpp\"" modname;
-    nl ()
+    nl (); 
+    (match cu.cpp_extfuns with
+      | None -> p "struct extfuns {};"
+      | Some preamble -> p "%s" preamble)
 
 let h_global (modname : string)() : unit = 
- p "struct extfuns {};";
  p "using simulator = module_%s<extfuns>;" modname; 
  p "using snapshot_t = simulator::snapshot_t;";
  p "using state_t = simulator::state_t;"; 
@@ -194,10 +196,10 @@ let decode_fn () =
     p "    return in_path + \"_decoded\";";
   )
 
-let assert_fn () =
+(* let assert_fn () =
   p_fn ~typ:"static bool " ~name:n_assert_fn ~args:"const snapshot_t& snap" (fun () ->
     p "    return true; // default predicate, can be overridden by user";
-  )
+  ) *)
 
 let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   p_fn ~typ:"static void " ~name:"dump_state" ~args:"const char* label, const state_t& st" (fun () ->
@@ -246,12 +248,12 @@ let h_main (modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit
 
 
 let h_cpp (modname: string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
-    let preamble_buf = with_output_to_buffer (h_preamble modname) in 
+    let preamble_buf = with_output_to_buffer (h_preamble modname cpp_in) in 
     let description_buf = with_output_to_buffer (h_description modname) in
     let registers_buf = with_output_to_buffer (h_registers cpp_in) in 
     let p_decode_fn = with_output_to_buffer decode_fn in
     let p_global = with_output_to_buffer (h_global modname) in
-    let assert_fn_buf = with_output_to_buffer assert_fn in
+    (* let assert_fn_buf = with_output_to_buffer assert_fn in *)
     let state_dump_fn_buf = with_output_to_buffer (state_dump_fn cpp_in) in
     p_buffer preamble_buf;
     p_buffer description_buf; 
@@ -259,7 +261,7 @@ let h_cpp (modname: string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
     p_buffer p_global; 
     nl (); 
     p_buffer p_decode_fn; 
-    p_buffer assert_fn_buf;
+    (* p_buffer assert_fn_buf; *)
     p_buffer state_dump_fn_buf;
     h_main modname cpp_in ()
 
