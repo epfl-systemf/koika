@@ -11,6 +11,8 @@ let n_decode_fn = "decode_path_for"
 
 let n_assert_fn = "assert_fn"
 
+let n_assert_final = "assert_final"
+
 let n_crashlogP = "CrashLogPath"
 let libraries = ["<vector>"; "<cstdio>";  "<cstdint>";  "<cassert>"]
 
@@ -178,6 +180,7 @@ let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
   p_buffer assign_val_buf; 
   p "    simulator %s(st); " n_sim;
   p "    %s.set_assert_pred(%s);" n_sim n_assert_fn;
+  p "    %s.set_assert_pred_final(%s);" n_sim n_assert_final;
   p "   uint64_t ncycles = 1000; "; 
   p "   %s.%s(ncycles, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz
 

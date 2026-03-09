@@ -308,6 +308,7 @@ let cuttlesim_hpp_fname =
 let fuzzing_library = "<cstdlib>"
 let run_fuzz = "run_fuzz"
 let assert_n = "assert_pred"
+let assert_final = "assert_pred_final"
 
 let reconstruct_switch action =
   let rec loop v = function
@@ -1471,28 +1472,29 @@ them before writing to the registers.\n"
       p_fn ~typ:"const std::vector<snapshot_t>&" ~name:"get_snapshots" ~annot:" const" ( fun () -> 
           p "return snapshot_history;") in
 
-    let clear_assert_pred () = 
-      p_fn ~typ:"void" ~name:("clear_" ^ assert_n) ( fun () -> 
-          p "%s = nullptr;" assert_n) in 
+    let clear_assert_pred (n_assert_fn : string )() = 
+      p_fn ~typ:"void" ~name:("clear_" ^ n_assert_fn) ( fun () -> 
+          p "%s = nullptr;" n_assert_fn) in 
     
-    let set_assert_pred () = 
-      p_fn ~typ:"void" ~name:("set_" ^ assert_n) ~args:"assert_pred_t p" (fun () ->
-          p "%s = p;" assert_n) in 
+    let set_assert_pred (n_assert_fn : string) () = 
+      p_fn ~typ:"void" ~name:("set_" ^ n_assert_fn) ~args:"assert_pred_t p" (fun () ->
+          p "%s = p;" n_assert_fn) in 
     
-    let assert_body () = 
+    let assert_body (n_assert_fn : string) () = 
        sprintf "if (%s) {
             if (!%s(snapshot())) {
               if (abort_on_failure) std::abort(); 
               return *this; 
             }
-          }" assert_n assert_n in 
+          }" n_assert_fn n_assert_fn in 
 
-    let p_run_fuzz name cycle assert_pred = 
+    let p_run_fuzz name cycle assert_pred assert_final = 
       p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles, bool abort_on_failure" (fun () ->
           p_cycle_loop (fun () ->
               p "%s();" cycle;
               nl (); 
               p "%s" assert_pred);
+              p "%s" assert_final; 
           p "return *this;") in
 
     let p_trace name cycle =
@@ -1540,6 +1542,7 @@ them before writing to the registers.\n"
         p_iffuzzer (fun () ->
             p "using assert_pred_t = bool(*)(const snapshot_t&);";
             p "assert_pred_t %s = nullptr;" assert_n;
+            p "assert_pred_t %s = nullptr;" assert_final;
             p "std::vector<snapshot_t> snapshot_history;");
         nl ();
 
@@ -1571,11 +1574,15 @@ them before writing to the registers.\n"
             nl ();
             get_snapshots();
             nl ();
-            p_run_fuzz run_fuzz "cycle" (assert_body ()); 
+            p_run_fuzz run_fuzz "cycle" (assert_body assert_n ()) (assert_body assert_final ()); 
             nl ();  
-            set_assert_pred (); 
+            set_assert_pred assert_n (); 
             nl (); 
-            clear_assert_pred (); 
+            clear_assert_pred assert_n (); 
+            nl ();
+            set_assert_pred assert_final (); 
+            nl (); 
+            clear_assert_pred assert_final (); 
             nl () )) in 
  
 
