@@ -47,7 +47,7 @@ type ('pos_t, 'var_t, 'fn_name_t, 'rule_name_t, 'reg_t, 'ext_fn_t) cpp_input_t =
   }
 
 type cpp_output_t =
-  { co_modname: string; co_hpp: Buffer.t; co_cpp: Buffer.t }
+  { co_modname: string; co_hpp: Buffer.t; co_cpp: Buffer.t; co_ext_funcs: Common.ffi_signature list; co_register_sigs: reg_signature list;}
 
 let sprintf = Printf.sprintf
 let fprintf = Printf.fprintf
@@ -1633,9 +1633,13 @@ them before writing to the registers.\n"
 
   let buf_cpp = with_output_to_buffer p_cpp in
   let buf_hpp = with_output_to_buffer p_hpp in
+  let ext_funcs = List.of_seq (Hashtbl.to_seq_keys program_info.pi_ext_funcalls) in
+  let register_sigs = Array.to_list all_register_sigs in
   { co_modname = hpp.cpp_module_name;
     co_hpp = buf_hpp;
-    co_cpp = buf_cpp }
+    co_cpp = buf_cpp;
+    co_ext_funcs = ext_funcs; 
+    co_register_sigs = register_sigs } 
 
 let cpp_rule_of_action reg_histories (rl_name, (kind, rl_body)) =
   { rl_external = kind = `ExternalRule; rl_name; rl_body;
@@ -1664,7 +1668,8 @@ let input_of_compile_unit (cu: 'f Cuttlebone.Compilation.compile_unit) =
     cpp_register_sigs = (fun r -> r);
     cpp_register_kinds = register_kinds;
     cpp_ext_sigs = (fun f -> f, `Function); (* FIXME add syntax for methods *)
-    cpp_extfuns = cu.c_cpp_preamble; }
+    cpp_extfuns = cu.c_cpp_preamble; 
+     }
 
 let cpp_rule_of_koika_package_rule (kp: _ Extr.koika_package_t)
       (reg_histories: 'rn -> 'rg -> _) (annotated_rules: 'rn -> _) (rn: 'rn) =
@@ -1705,7 +1710,7 @@ let input_of_sim_package
     cpp_ext_sigs = ext_fn_sigs;
     cpp_extfuns = (match sp.sp_prelude with
                    | None -> None
-                   | Some s -> Some (Util.string_of_coq_string s)); }
+                   | Some s -> Some (Util.string_of_coq_string s));   }
 
 let flags_standard =
   ["--std=c++14"]
@@ -1728,7 +1733,7 @@ let write_preamble dpath =
   let fpath = Filename.concat dpath cuttlesim_hpp_fname in
   Common.with_output_to_file fpath output_string cuttlesim_hpp
 
-let write_output target_dpath (kind: [< `Cpp | `Hpp | `Opt]) ({ co_modname; co_hpp; co_cpp }: cpp_output_t) =
+let write_output target_dpath (kind: [< `Cpp | `Hpp | `Opt]) ({ co_modname; co_hpp; co_cpp; co_ext_funcs; co_register_sigs }: cpp_output_t) =
   let fpath_noext = Filename.concat target_dpath co_modname in
   if kind = `Hpp || kind = `Opt then begin
       write_preamble target_dpath;
