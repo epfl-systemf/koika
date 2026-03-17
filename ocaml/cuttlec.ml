@@ -98,7 +98,7 @@ let run_backend' (backend: backend) cnf pkg =
   | `Harness -> 
       let cpp_out = Lazy.force pkg.pkg_cpp in
       let  Pack_cpp_input cpp_in = Lazy.force pkg.pkg_cpp_in in
-      Backends.Harness.main cnf.cnf_dst_dpath cpp_out.co_modname cpp_in
+      Backends.Harness.main cnf.cnf_dst_dpath cpp_out cpp_in
   | (`Hpp | `Cpp | `Opt) as kd ->
      let cpp = Lazy.force pkg.pkg_cpp in
      Backends.Cpp.write_output cnf.cnf_dst_dpath kd cpp

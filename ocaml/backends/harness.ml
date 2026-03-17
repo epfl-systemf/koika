@@ -8,11 +8,14 @@ let n_sim_init = "st"
 let n_sim = "sim" 
 let n_seed_buf = "buf"
 let n_set_init_fn = "set_init" 
+let n_set_inputs_fn = "set_inputs"  
 let n_decode_fn = "decode_path_for"
 let n_assert_fn = "assert_fn"
 let n_assert_final = "assert_final"
 let harness_ns = "harness"
 let fn_dump_state = "dump_state"
+
+let nSeedPairs = "kSeedPairs"
 
 let n_extfuns_impl = "extfuns_impl"
 
@@ -267,11 +270,48 @@ let h_static_seed_file () : unit =
   p "   }";
   p "   fclose(f); // close file"
 
+let h_static_queue_dump () : unit =
+  p "template <typename T>";
+  p_fn ~typ:"inline void" ~name:"dump_hex_value" ~args:"FILE* out, const char* item_name, std::size_t idx, const T& v, int bit_width" (fun () ->
+    p "const int hex_digits = (bit_width + 3) / 4;";
+    p "if constexpr (std::is_integral_v<T>) {";
+    p "  std::fprintf(out, \"%%s[%%zu]: 0x%%0*llx\\n\",";
+    p "               item_name,";
+    p "               idx,";
+    p "               hex_digits,";
+    p "               static_cast<unsigned long long>(v));";
+    p "} else {";
+    p "  const auto packed = prims::pack(v);";
+    p "  std::fprintf(out, \"%%s[%%zu]: 0x%%0*llx\\n\",";
+    p "               item_name,";
+    p "               idx,";
+    p "               hex_digits,";
+    p "               static_cast<unsigned long long>(packed.v));";
+    p "}" );
+  nl ();
+  p "template <typename QueueT>";
+  p_fn ~typ:"inline void" ~name:"dump_queue_hex" ~args:"FILE* out, const char* title, const char* item_name, QueueT q, int bit_width" (fun () ->
+    p "std::fprintf(out, \"--- %%s ---\\n\", title);";
+    nl ();
+    p "std::size_t idx = 0;";
+    p "while (!q.empty()) {";
+    p "  const auto v = q.front();";
+    p "  q.pop();";
+    p "  dump_hex_value(out, item_name, idx, v, bit_width);";
+    p "  ++idx;";
+    p "}";
+    nl ();
+    p "if (idx == 0) {";
+    p "  std::fprintf(out, \"(empty)\\n\");";
+    p "}";
+  )
+
+
 let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
   let register_sizes_ = register_layouts cu in
   let total_input_size = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 register_sizes_ in (* could I just use last offset of register_sizes + last byte value ?*)
   p "// Total input size: %d bytes" total_input_size; 
-  p "   const std::size_t expected_bytes =%d;" total_input_size; 
+  p "   const std::size_t expected_bytes =%d * %s::%s;" total_input_size harness_ns nSeedPairs; 
   p "   if (%s.size() < expected_bytes) {" n_seed_buf; (* this or abort when using the wrong size ? *)
   p "     %s.resize(expected_bytes, 0);" n_seed_buf;
   p "   } else if (%s.size() > expected_bytes) {" n_seed_buf;
@@ -321,23 +361,31 @@ let pack_bits_from_bytes (cout : Cpp.cpp_output_t) () : unit =
   p "}"; nl ()
 
 
-let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
-  p "    %s::simulator::state_t %s = %s::simulator::initial_state();" harness_ns n_sim_init harness_ns;
-  p "    %s::%s(%s, buf);" harness_ns n_set_init_fn n_sim_init;
-  p "    %s::simulator %s(st); " harness_ns n_sim;
-  p "    %s.set_assert_pred(%s);" n_sim n_assert_fn;
-  p "    %s.set_assert_pred_final(%s);" n_sim n_assert_final;
-  p "   uint64_t ncycles = 1000; "; 
-  p "   %s.%s(ncycles, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz
-
-
-let replay_block () = 
+let replay_block_initial () = 
     p " if (replay) { ";
     p "    %s::%s = %s::%s(input_path);" harness_ns n_crashlogP harness_ns n_decode_fn;
     p "    fprintf(stderr, \"Replaying input from %%s\\n\", input_path);"; 
     p "    %s::%s(\"Initial State\", %s);" harness_ns fn_dump_state n_sim_init;
+    p "}"
+
+let replay_block_final () = 
+    p " if (replay) { ";
     p "    %s::%s(\"Final State\", %s.snapshot().state);" harness_ns fn_dump_state n_sim; 
     p "}"
+
+
+let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
+  let replay_init = with_output_to_buffer replay_block_initial in
+  let replay_final = with_output_to_buffer replay_block_final in
+  p "    %s::simulator::state_t %s = %s::simulator::initial_state();" harness_ns n_sim_init harness_ns;
+  p "    // %s::%s(%s, %s); // either init mode" harness_ns n_set_init_fn n_sim_init n_seed_buf;
+  p "    // %s::%s(%s); // or input mode, TODO: implement choice smarter, later" harness_ns n_set_inputs_fn n_seed_buf;
+  p_buffer replay_init;
+  p "    %s::simulator %s(st); " harness_ns n_sim;
+  p "    %s.set_assert_pred(%s);" n_sim n_assert_fn;
+  p "    %s.set_assert_pred_final(%s);" n_sim n_assert_final;
+  p "   %s.%s(%s::kRunCycles, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz harness_ns; 
+  p_buffer replay_final
 
 
 let decode_fn () = 
@@ -352,17 +400,13 @@ let dump_bits () =
       p "  std::fprintf(out, \"%%s[%%d] = 0x%%08x\\n\", name, width, (unsigned)packed.v);";
     )
  
-(* let assert_fn () =
-  p_fn ~typ:"static bool " ~name:n_assert_fn ~args:"const snapshot_t& snap" (fun () ->
-    p "    return true; // default predicate, can be overridden by user";
-  ) *)
 let set_inputs (cout : Cpp.cpp_output_t) () : unit= 
   let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout) in 
-  p_fn ~typ:"static void" ~name:"set_inputs" ~args:"const std::vector<uint8_t>& buf" (fun () ->
+  p_fn ~typ:"static void" ~name:n_set_inputs_fn ~args:"const std::vector<uint8_t>& buf" (fun () ->
     p "  extfuns_impl::clear();";
     List.iter (fun r ->
       p "constexpr std::size_t %s_bytes = %d;" r.name r.bytes;
-      p " for (std::size_t i = 0; i < kSeedPairs; ++i) { "; (* naive single input for now*)
+      p " for (std::size_t i = 0; i < %s; ++i) { " nSeedPairs; (* naive single input for now*)
       p "  const std::size_t off = i * %s_bytes;" r.name;
       p "    extfuns_impl::%s_chan.push(pack_bits_from_bytes<%d>(buf, off, %s_bytes));" r.name r.bits r.name;
       p " } " 
@@ -382,8 +426,9 @@ let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t)
     p "  ALL_REGISTERS(DUMP_FIELD)";
     p "#undef DUMP_FIELD";
     nl (); 
-    p "  // dump_queue_hex(out, \"extfuns input queue\", \"inq\", extfuns_impl::inq, 32);";
-    p "  // dump_queue_hex(out, \"extfuns output queue\", \"outq\", extfuns_impl::outq, 16);";
+    List.iter ( fun r -> 
+      p " dump_queue_hex(out, \"extfuns %s queue\", \" %s \",  %s::%s_chan.q, %d);" r.name r.name n_extfuns_impl r.name r.bits
+      )  (io_layouts cout);
     nl (); 
     p "  if (out != stderr) {";
     p "    std::fclose(out);";
@@ -443,13 +488,14 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
   let channel_func_buf = with_output_to_buffer (channel_func cout) in
   let set_inputs_buf = with_output_to_buffer (set_inputs cout) in
   let pack_bb_buf = with_output_to_buffer (pack_bits_from_bytes cout) in
+  let dump_queue = with_output_to_buffer h_static_queue_dump in
    p "namespace %s {" name;
    p "    struct extfuns_impl; ";
    p "    using extfuns_t = extfuns_impl;"; 
    p "}"; 
   p "namespace %s {" name;
   nl ();  
-  p "   constexpr std::size_t kSeedPairs = 10;";
+  p "   constexpr std::size_t %s = 10;" nSeedPairs;
   p "   constexpr uint64_t    kRunCycles = 10;";
   nl (); 
   p_buffer str_extfuns_fn;
@@ -470,6 +516,8 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
   nl ();
   p_buffer set_inputs_buf;
   nl ();
+  p_buffer dump_queue; 
+  nl (); 
   p_buffer dump_state;
   nl ();
   p_buffer set_init_fn_buf;
@@ -483,7 +531,6 @@ let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : uni
   let p_static_seed = with_output_to_buffer h_static_seed_file in
   let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in) in
   let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
-  let replay_blk = with_output_to_buffer replay_block in
   p_fn ~typ:"int" ~name:"main" ~args:"int argc, char **argv" (fun () ->
     nl ();  
     p_buffer p_static_seed; 
@@ -491,8 +538,6 @@ let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : uni
     p_buffer input_siz_cal; 
     nl (); 
     p_buffer h_sim;
-    nl (); 
-    p_buffer replay_blk; 
     nl (); 
     p "  return 0;"
   )
