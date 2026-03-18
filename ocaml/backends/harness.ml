@@ -129,21 +129,31 @@ let contains s1 s2 =
   with Exit -> true
   
 let io_layouts (cout : Cpp.cpp_output_t) : io_layout list =
-  match cout.co_ext_funcs with
-  | [] -> []
-  | l -> List.map (fun ffi ->
-         let name =  ffi.ffi_name in
-         let arg_s = typ_to_string ffi.ffi_argtype in 
-         let ret_s = ffi.ffi_rettype in
-         let io = if contains name "input" || contains name "in" then Input else Output in
+  let (_final_off, acc_rev) =
+    List.fold_left
+      (fun (off, acc) ffi ->
+         let name = ffi.ffi_name in
+         let io =
+           if contains name "input" || contains name "in"
+           then Input
+           else Output
+         in
          let typ = if io = Input then ffi.ffi_rettype else ffi.ffi_argtype in
          let rettyp = ffi.ffi_rettype in
          let argtyp = ffi.ffi_argtype in
          let bits = typ_sz typ in
          let bytes = (bits + 7) / 8 in
-         let entry = { name; io; typ; rettyp; argtyp; bits; bytes; off = 0 } in (* offset can be set later based on layout *)
-          (entry)
-         ) l
+         let entry = { name; io; typ; rettyp; argtyp; bits; bytes; off } in
+         let next_off =
+           match io with
+           | Input -> off + bytes
+           | Output -> off
+         in
+         (next_off, entry :: acc))
+      (0, [])
+      cout.co_ext_funcs
+  in
+  List.rev acc_rev
 
 
 
@@ -205,9 +215,9 @@ let out_var_macro (name : string) (registers : 'a list)
   p "#define %s(X) \\" name;
   let rec aux = function
     | [] -> ()
-    | [r] -> p "   X(%s, %d, uint16_t)" (get_name r) (get_bits r)
+    | [r] -> p "   X(%s, %d, uint%d_t)" (get_name r) (get_bits r) (get_bits r); (* needs fixing won't generalize*)
     | r :: rs ->
-        p "   X(%s, %d, uint16_t) \\" (get_name r) (get_bits r);
+        p "   X(%s, %d,  uint%d_t) \\" (get_name r) ( get_bits r) (get_bits r);  (* needs fixing won't generalize*)
         aux rs
   in
   aux registers
@@ -311,19 +321,12 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
   let register_sizes_ = register_layouts cu in
   let total_input_size = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 register_sizes_ in (* could I just use last offset of register_sizes + last byte value ?*)
   p "// Total input size: %d bytes" total_input_size; 
-  p "   const std::size_t expected_bytes =%d * %s::%s;" total_input_size harness_ns nSeedPairs; 
-  p "   if (%s.size() < expected_bytes) {" n_seed_buf; (* this or abort when using the wrong size ? *)
-  p "     %s.resize(expected_bytes, 0);" n_seed_buf;
-  p "   } else if (%s.size() > expected_bytes) {" n_seed_buf;
-  p "     %s.resize(expected_bytes);" n_seed_buf;
-  p "   }"
-  (* List.iter (fun (r : reg_layout) -> 
-    p "   for (std::size_t i = 0; i < %d; ++i) {" r.bytes;
-    p "     auto b = prims::widen<%d>(prims::bits<8>::mk(buf[%d + i]));" (r.bytes * 8) r.off;
-    p "     %s = %s | (b << (8 * i)); " r.name r.name;
-    p "   }"; 
-    nl ();
-  ) register_sizes_ *)
+  p "   const std::size_t one_input =%d; " total_input_size; 
+  p "   const std::size_t %s_size = %s.size();" n_seed_buf n_seed_buf;
+  p "   if (%s_size < one_input) return 0; " n_seed_buf; (* this or abort when using the wrong size ? *)
+  nl (); 
+  p "   const std::size_t %s = %s_size / one_input; // round down" nSeedPairs n_seed_buf;
+  p "   %s.resize(one_input * %s);" n_seed_buf nSeedPairs
 
 let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   let register_sizes_ = register_layouts cu in
@@ -333,17 +336,7 @@ let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
     |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " n_sim_init r.name n_sim_init r.name r.name (* is this sufficient ?*)
   ) register_sizes_
 
-let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
-   let register_sizes_ = register_layouts cu in
-   let assign_val_buf = with_output_to_buffer (assign_val cu) in
-   p_fn ~typ:"static void " ~name:n_set_init_fn ~args:("state_t &"^n_sim_init^", const std::vector<uint8_t>& "^n_seed_buf) (fun () ->
-       List.iter (fun (r : reg_layout) -> 
-       p "   prims::bits<%d> %s = prims::bits<%d>::mk(0);" (r.bytes * 8) r.name (r.bytes * 8); (* need to round up, is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
-       ) register_sizes_; 
-       List.iter ( fun (r : reg_layout) -> 
-       p " %s.%s = pack_bits_from_bytes<%d>(buf, %d, %d);" n_sim_init r.name (r.bytes * 8) r.off r.bytes; 
-       ) register_sizes_ )
-       
+
 
 let pack_bits_from_bytes (cout : Cpp.cpp_output_t) () : unit =
   (* emit generic packer *)
@@ -379,12 +372,12 @@ let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
   let replay_final = with_output_to_buffer replay_block_final in
   p "    %s::simulator::state_t %s = %s::simulator::initial_state();" harness_ns n_sim_init harness_ns;
   p "    // %s::%s(%s, %s); // either init mode" harness_ns n_set_init_fn n_sim_init n_seed_buf;
-  p "    // %s::%s(%s); // or input mode, TODO: implement choice smarter, later" harness_ns n_set_inputs_fn n_seed_buf;
+  p "    // %s::%s(%s, %s); // or input mode, TODO: implement choice smarter, later" harness_ns n_set_inputs_fn n_seed_buf nSeedPairs;
   p_buffer replay_init;
   p "    %s::simulator %s(st); " harness_ns n_sim;
   p "    %s.set_assert_pred(%s);" n_sim n_assert_fn;
   p "    %s.set_assert_pred_final(%s);" n_sim n_assert_final;
-  p "   %s.%s(%s::kRunCycles, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz harness_ns; 
+  p "   %s.%s(%s, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz nSeedPairs; 
   p_buffer replay_final
 
 
@@ -402,15 +395,29 @@ let dump_bits () =
  
 let set_inputs (cout : Cpp.cpp_output_t) () : unit= 
   let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout) in 
-  p_fn ~typ:"static void" ~name:n_set_inputs_fn ~args:"const std::vector<uint8_t>& buf" (fun () ->
+  p_fn ~typ:"static void" ~name:n_set_inputs_fn ~args:("const std::vector<uint8_t>& buf, const std::size_t " ^ nSeedPairs) (fun () ->
     p "  extfuns_impl::clear();";
     List.iter (fun r ->
       p "constexpr std::size_t %s_bytes = %d;" r.name r.bytes;
       p " for (std::size_t i = 0; i < %s; ++i) { " nSeedPairs; (* naive single input for now*)
-      p "  const std::size_t off = i * %s_bytes;" r.name;
-      p "    extfuns_impl::%s_chan.push(pack_bits_from_bytes<%d>(buf, off, %s_bytes));" r.name r.bits r.name;
+      p "  const std::size_t off = i * %d;" r.off;
+      p "   prims::bits<%d> safe_%s = pack_bits_from_bytes<%d>(buf, off, %s_bytes);" (r.bytes * 8) r.name (r.bytes * 8) r.name; (* safe bit conversion *)
+      p "    extfuns_impl::%s_chan.push( prims::bits<%d>::mk(safe_%s));" r.name r.bits r.name;
       p " } " 
     ) io_layout )
+
+let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
+   let register_sizes_ = register_layouts cu in
+   let assign_val_buf = with_output_to_buffer (assign_val cu) in
+   p_fn ~typ:"static void " ~name:n_set_init_fn ~args:("state_t &"^n_sim_init^", const std::vector<uint8_t>& "^n_seed_buf) (fun () ->
+       List.iter (fun (r : reg_layout) -> 
+       p "   prims::bits<%d> %s = prims::bits<%d>::mk(0);" (r.bytes * 8) r.name (r.bytes * 8); (* need to round up, is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
+       ) register_sizes_; 
+       List.iter ( fun (r : reg_layout) -> 
+       p " %s = pack_bits_from_bytes<%d>(%s, %d, %d);" r.name (r.bytes * 8) n_seed_buf r.off r.bytes; (* safe bit conversion *)
+       p " %s.%s =  prims::bits<%d>::mk(%s); " n_sim_init r.name r.bits r.name
+       ) register_sizes_ )
+       
 
 let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () = 
   p_fn ~typ:"static void " ~name:fn_dump_state ~args:"const char* label, const state_t& st" (fun () ->
@@ -466,11 +473,9 @@ let io_layout  = io_layouts cout in
     match r.io with   
     | Input -> 
                 p_fn ~typ:"inline auto" ~name:(n_extfuns_impl^"::"^r.name) ~args:"bits<1> ready" (fun () ->
-                  p "if (bool (ready)) {";
+                  p " // ready can be ignored"; 
                   p "  const %s_packed_t p = %s_chan.pop_or_zero();" r.name r.name;
-                  p "  return prims::unpack<bits<%d>>(p);" r.bits;
-                  p "} else {";
-                  p "  return prims::unpack<bits<%d>>(%s_packed_t::mk(0)); }" r.bits r.name )
+                  p "  return prims::unpack<bits<%d>>(p);" r.bits; )
     | Output -> p_fn ~typ:"inline bits<1>" ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "bits<%d> v" (typ_sz r.argtyp)) (fun () ->
                   p "  %s_chan.push(static_cast<%s_stored_t>(prims::pack(v).v));" r.name r.name;
                   p "  return bits<1>::mk(true);"
@@ -494,9 +499,6 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
    p "    using extfuns_t = extfuns_impl;"; 
    p "}"; 
   p "namespace %s {" name;
-  nl ();  
-  p "   constexpr std::size_t %s = 10;" nSeedPairs;
-  p "   constexpr uint64_t    kRunCycles = 10;";
   nl (); 
   p_buffer str_extfuns_fn;
   nl (); 
