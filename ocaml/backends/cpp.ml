@@ -46,17 +46,18 @@ type ('pos_t, 'var_t, 'fn_name_t, 'rule_name_t, 'reg_t, 'ext_fn_t) cpp_input_t =
     cpp_extfuns: string option;
   }
 
-type cpp_output_t =
-  { co_modname: string; co_hpp: Buffer.t; co_cpp: Buffer.t; co_ext_funcs: Common.ffi_signature list; co_register_sigs: reg_signature list;}
-
-let sprintf = Printf.sprintf
-let fprintf = Printf.fprintf
-
 type program_info =
   { mutable pi_committed: bool;
     mutable pi_needs_multiprecision: bool;
     mutable pi_user_types: (string * typ) list;
     pi_ext_funcalls: (Common.ffi_signature, unit) Hashtbl.t }
+
+type cpp_output_t =
+  { co_modname: string; co_hpp: Buffer.t; co_cpp: Buffer.t; co_ext_funcs: Common.ffi_signature list; co_register_sigs: reg_signature list; co_program_info: program_info;}
+
+let sprintf = Printf.sprintf
+let fprintf = Printf.fprintf
+
 
 let fresh_program_info () =
   { pi_committed = false;
@@ -1639,7 +1640,8 @@ them before writing to the registers.\n"
     co_hpp = buf_hpp;
     co_cpp = buf_cpp;
     co_ext_funcs = ext_funcs; 
-    co_register_sigs = register_sigs } 
+    co_register_sigs = register_sigs;
+    co_program_info = program_info } 
 
 let cpp_rule_of_action reg_histories (rl_name, (kind, rl_body)) =
   { rl_external = kind = `ExternalRule; rl_name; rl_body;
@@ -1733,7 +1735,7 @@ let write_preamble dpath =
   let fpath = Filename.concat dpath cuttlesim_hpp_fname in
   Common.with_output_to_file fpath output_string cuttlesim_hpp
 
-let write_output target_dpath (kind: [< `Cpp | `Hpp | `Opt]) ({ co_modname; co_hpp; co_cpp; co_ext_funcs; co_register_sigs }: cpp_output_t) =
+let write_output target_dpath (kind: [< `Cpp | `Hpp | `Opt]) ({ co_modname; co_hpp; co_cpp; co_ext_funcs; co_register_sigs ; co_program_info}: cpp_output_t) =
   let fpath_noext = Filename.concat target_dpath co_modname in
   if kind = `Hpp || kind = `Opt then begin
       write_preamble target_dpath;

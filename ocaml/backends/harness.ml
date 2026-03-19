@@ -32,6 +32,9 @@ let pr fmt = pk ignore fmt
 let p_buffer b = Buffer.add_buffer !buffer b 
 let set_buffer b = let b' = !buffer in buffer := b; b' 
 
+let p_comment fmt =
+    pr "/* "; pk (fun _ -> pr " */"; nl ()) fmt 
+
 let p_scoped header ?(terminator="") pbody =
     p "%s {" header;
     let r = pbody () in
@@ -88,6 +91,7 @@ type io = Input | Output
 
 type io_layout = {
   name : string;
+  type_n : string; 
   io : io; 
   typ  : typ; 
   rettyp : typ; 
@@ -139,11 +143,12 @@ let io_layouts (cout : Cpp.cpp_output_t) : io_layout list =
            else Output
          in
          let typ = if io = Input then ffi.ffi_rettype else ffi.ffi_argtype in
+         let type_n = Cpp.cpp_type_of_type cout.co_program_info typ in
          let rettyp = ffi.ffi_rettype in
          let argtyp = ffi.ffi_argtype in
          let bits = typ_sz typ in
          let bytes = (bits + 7) / 8 in
-         let entry = { name; io; typ; rettyp; argtyp; bits; bytes; off } in
+         let entry = { name; io; typ; type_n; rettyp; argtyp; bits; bytes; off} in
          let next_off =
            match io with
            | Input -> off + bytes
@@ -210,14 +215,14 @@ let macro_variables (name : string) (registers : 'a list)
   aux registers
 
 
-let out_var_macro (name : string) (registers : 'a list)
+let macro_var_io (name : string) (registers : 'a list)
     ~(get_name : 'a -> string) ~(get_bits : 'a -> int) () =
   p "#define %s(X) \\" name;
   let rec aux = function
     | [] -> ()
-    | [r] -> p "   X(%s, %d, uint%d_t)" (get_name r) (get_bits r) (get_bits r); (* needs fixing won't generalize*)
+    | [r] -> p "   X(%s, %d, %s)" (get_name r) (get_bits r) r.type_n; (* needs fixing won't generalize*)
     | r :: rs ->
-        p "   X(%s, %d,  uint%d_t) \\" (get_name r) ( get_bits r) (get_bits r);  (* needs fixing won't generalize*)
+        p "   X(%s, %d,  %s) \\" (get_name r) ( get_bits r) r.type_n;  (* needs fixing won't generalize*)
         aux rs
   in
   aux registers
@@ -232,9 +237,9 @@ let include_macros (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t
   nl ();
   macro_variables "VAL_REGISTER" val_reisters ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) ();
   nl ();
-  macro_variables "EXT_INPUTS" input_io ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) (); 
+  macro_var_io "EXT_INPUTS" input_io ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) (); 
   nl ();
-  out_var_macro "EXT_OUTPUTS" output_io ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) (); 
+  macro_var_io "EXT_OUTPUTS" output_io ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) (); 
   nl ()
 
 let h_registers (cu : (_,_,_,_,_,_) cpp_input_t) () : unit =
@@ -323,7 +328,7 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
   p "// Total input size: %d bytes" total_input_size; 
   p "   const std::size_t one_input =%d; " total_input_size; 
   p "   const std::size_t %s_size = %s.size();" n_seed_buf n_seed_buf;
-  p "   if (%s_size < one_input) return 0; " n_seed_buf; (* this or abort when using the wrong size ? *)
+  p "   if (%s_size < one_input) return 0; " n_seed_buf; 
   nl (); 
   p "   const std::size_t %s = %s_size / one_input; // round down" nSeedPairs n_seed_buf;
   p "   %s.resize(one_input * %s);" n_seed_buf nSeedPairs
@@ -335,7 +340,6 @@ let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
     | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" n_sim_init r.name r.bits r.name
     |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " n_sim_init r.name n_sim_init r.name r.name (* is this sufficient ?*)
   ) register_sizes_
-
 
 
 let pack_bits_from_bytes (cout : Cpp.cpp_output_t) () : unit =
@@ -402,7 +406,10 @@ let set_inputs (cout : Cpp.cpp_output_t) () : unit=
       p " for (std::size_t i = 0; i < %s; ++i) { " nSeedPairs; (* naive single input for now*)
       p "  const std::size_t off = i * %d;" r.off;
       p "   prims::bits<%d> safe_%s = pack_bits_from_bytes<%d>(buf, off, %s_bytes);" (r.bytes * 8) r.name (r.bytes * 8) r.name; (* safe bit conversion *)
-      p "    extfuns_impl::%s_chan.push( prims::bits<%d>::mk(safe_%s));" r.name r.bits r.name;
+      if r.bits < r.bytes * 8 then 
+             p "    extfuns_impl::%s_chan.push( prims::truncate<%d>(safe_%s));" r.name r.bits r.name
+      else  
+            p "    extfuns_impl::%s_chan.push(prims::unpack<%s>(safe_%s));" r.name r.type_n r.name;
       p " } " 
     ) io_layout )
 
@@ -415,8 +422,8 @@ let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () =
        ) register_sizes_; 
        List.iter ( fun (r : reg_layout) -> 
        p " %s = pack_bits_from_bytes<%d>(%s, %d, %d);" r.name (r.bytes * 8) n_seed_buf r.off r.bytes; (* safe bit conversion *)
-       p " %s.%s =  prims::bits<%d>::mk(%s); " n_sim_init r.name r.bits r.name
-       ) register_sizes_ )
+       ) register_sizes_ );
+  p_buffer assign_val_buf
        
 
 let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () = 
@@ -459,9 +466,10 @@ let str_extfuns (name : string) (cout : Cpp.cpp_output_t) () : unit  =
   ; p "};"
 
 let channel_macros (io: io) () = 
-  let (s_io, arguments, p_or_s) = match io with 
-    | Input -> ("input", "name, width", "packed_t")
-    | Output -> ("output", "name,width,storage", "stored_t") in
+  let (arguments, p_or_s) = ("name, width, storage", "stored_t") in 
+  let s_io = match io with 
+    | Input -> "input"
+    | Output -> "output" in
   p "#define DEF_%s_CHANNEL(%s) \\" (String.uppercase_ascii s_io) arguments; 
   p " %s_channel_fifo<%s::name##_%s> %s::name##_chan;" s_io n_extfuns_impl p_or_s n_extfuns_impl; 
   p "EXT_%sS(DEF_%s_CHANNEL)" (String.uppercase_ascii s_io) (String.uppercase_ascii s_io);
@@ -474,10 +482,10 @@ let io_layout  = io_layouts cout in
     | Input -> 
                 p_fn ~typ:"inline auto" ~name:(n_extfuns_impl^"::"^r.name) ~args:"bits<1> ready" (fun () ->
                   p " // ready can be ignored"; 
-                  p "  const %s_packed_t p = %s_chan.pop_or_zero();" r.name r.name;
-                  p "  return prims::unpack<bits<%d>>(p);" r.bits; )
+                  p "  const %s_stored_t p = %s_chan.pop_or_zero();" r.name r.name;
+                  p "  return p;" )
     | Output -> p_fn ~typ:"inline bits<1>" ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "bits<%d> v" (typ_sz r.argtyp)) (fun () ->
-                  p "  %s_chan.push(static_cast<%s_stored_t>(prims::pack(v).v));" r.name r.name;
+                  p "  %s_chan.push(static_cast<%s_stored_t>(v));" r.name r.name;
                   p "  return bits<1>::mk(true);"
     ) ) io_layout 
 
@@ -544,6 +552,8 @@ let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : uni
     p "  return 0;"
   )
 
+
+  
 let h_inspect_cpp_out (cpp_out : Cpp.cpp_output_t) () : unit = 
   p "// CPP Output Info:";
   p "//  - Module name: %s" cpp_out.co_modname;
@@ -551,11 +561,14 @@ let h_inspect_cpp_out (cpp_out : Cpp.cpp_output_t) () : unit =
    | [] -> p "//  - Ext functions: none"
    | l ->
        p "//  - Ext functions: %d" (List.length l);
-       List.iter (fun ffi ->
-         let name = (try ffi.ffi_name with _ -> "<anon>") in
-          let arg_s = (try typ_to_string ffi.ffi_argtype with _ -> "<arg>") in
-         let ret_s = (try typ_to_string ffi.ffi_rettype with _ -> "<ret>") in
-         p "//    - %s : %s -> %s" name arg_s ret_s
+       List.iter (fun sign ->
+         let name = (try sign.ffi_name with _ -> "<anon>") in
+        let arg_s = (try typ_to_string sign.ffi_argtype with _ -> "<arg>") in
+         let ret_s = (try typ_to_string sign.ffi_rettype with _ -> "<ret>") in 
+         (* let sp_arg typ = sprintf "const %s arg" (typ_to_string (Cpp.cpp_type_of_type typ)) in *)
+         let typp = Cpp.cpp_type_of_type cpp_out.co_program_info sign.ffi_rettype in
+          p_comment "%s %s;" typp sign.ffi_name; 
+         p "//    - %s : %s -> %s" name arg_s ret_s  
        ) l);
   List.iter (fun r ->
     let name = r.reg_name in
