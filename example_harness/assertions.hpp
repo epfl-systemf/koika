@@ -8,7 +8,7 @@ inline bool assert_fn(const snapshot_t& snap) {
 }
 
 template <typename snapshot_t>
-inline bool assert_final(const harness::snapshot_t& snap) {
+inline bool assert_final(const snapshot_t& snap) {
    return true; 
 }
 
