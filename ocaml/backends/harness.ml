@@ -87,7 +87,7 @@ type reg_layout = {
   off  : int;
 }
 
-type io = Input | Output 
+type io = Input | Output | Function
 
 type io_layout = {
   name : string;
@@ -140,7 +140,8 @@ let io_layouts (cout : Cpp.cpp_output_t) : io_layout list =
          let io =
            if contains name "input" || contains name "in"
            then Input
-           else Output
+           else if contains name "output" || contains name "out" then Output
+           else Function
          in
          let typ = if io = Input then ffi.ffi_rettype else ffi.ffi_argtype in
          let type_n = Cpp.cpp_type_of_type cout.co_program_info typ in
@@ -152,7 +153,7 @@ let io_layouts (cout : Cpp.cpp_output_t) : io_layout list =
          let next_off =
            match io with
            | Input -> off + bytes
-           | Output -> off
+           | _ -> off
          in
          (next_off, entry :: acc))
       (0, [])
@@ -322,9 +323,9 @@ let h_static_queue_dump () : unit =
   )
 
 
-let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
-  let register_sizes_ = register_layouts cu in
-  let total_input_size = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 register_sizes_ in (* could I just use last offset of register_sizes + last byte value ?*)
+let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () : unit = 
+  let io_layouts_ = List.filter (fun r -> r.io = Input) (io_layouts cout) in
+  let total_input_size = List.fold_left (fun acc (r : io_layout) -> acc + r.bytes) 0 io_layouts_ in (* could I just use last offset of register_sizes + last byte value ?*)
   p "// Total input size: %d bytes" total_input_size; 
   p "   const std::size_t one_input =%d; " total_input_size; 
   p "   const std::size_t %s_size = %s.size();" n_seed_buf n_seed_buf;
@@ -337,10 +338,12 @@ let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
   let register_sizes_ = register_layouts cu in
   List.iter (fun (r : reg_layout) -> 
     match r.typ with 
-    | Bits_t _ -> p " %s.%s = prims::bits<%d>::mk(%s);" n_sim_init r.name r.bits r.name
+    | Bits_t _ -> if r.bits < r.bytes * 8 then 
+                      p " %s.%s = prims::truncate<%d>(%s);" n_sim_init r.name r.bits r.name
+  else
+     p " %s.%s = prims::bits<%d>::mk(%s);" n_sim_init r.name r.bits r.name
     |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " n_sim_init r.name n_sim_init r.name r.name (* is this sufficient ?*)
   ) register_sizes_
-
 
 let pack_bits_from_bytes (cout : Cpp.cpp_output_t) () : unit =
   (* emit generic packer *)
@@ -397,21 +400,40 @@ let dump_bits () =
       p "  std::fprintf(out, \"%%s[%%d] = 0x%%08x\\n\", name, width, (unsigned)packed.v);";
     )
  
-let set_inputs (cout : Cpp.cpp_output_t) () : unit= 
-  let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout) in 
-  p_fn ~typ:"static void" ~name:n_set_inputs_fn ~args:("const std::vector<uint8_t>& buf, const std::size_t " ^ nSeedPairs) (fun () ->
-    p "  extfuns_impl::clear();";
-    List.iter (fun r ->
-      p "constexpr std::size_t %s_bytes = %d;" r.name r.bytes;
-      p " for (std::size_t i = 0; i < %s; ++i) { " nSeedPairs; (* naive single input for now*)
-      p "  const std::size_t off = i * %d;" r.off;
-      p "   prims::bits<%d> safe_%s = pack_bits_from_bytes<%d>(buf, off, %s_bytes);" (r.bytes * 8) r.name (r.bytes * 8) r.name; (* safe bit conversion *)
-      if r.bits < r.bytes * 8 then 
-             p "    extfuns_impl::%s_chan.push( prims::truncate<%d>(safe_%s));" r.name r.bits r.name
-      else  
-            p "    extfuns_impl::%s_chan.push(prims::unpack<%s>(safe_%s));" r.name r.type_n r.name;
-      p " } " 
-    ) io_layout )
+let set_inputs (cout : Cpp.cpp_output_t) () : unit =
+  let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout) in
+  p_fn ~typ:"static void" ~name:n_set_inputs_fn
+    ~args:("const std::vector<uint8_t>& buf, const std::size_t " ^ nSeedPairs)
+    (fun () ->
+      p "  extfuns_impl::clear();";
+
+      List.iter (fun r ->
+        p "constexpr std::size_t %s_bytes = %d;" r.name r.bytes;
+      ) io_layout;
+
+      let total_input_size =
+        List.fold_left (fun acc (r : io_layout) -> acc + r.bytes) 0 io_layout
+      in
+      p "constexpr std::size_t total_bytes = %d;" total_input_size;
+      p "for (std::size_t i = 0; i < %s; ++i) {" nSeedPairs;
+      p "  const std::size_t base_off = i * total_bytes;";
+
+      List.iter (fun r ->
+        p "  {";
+        p "    const std::size_t off = base_off + %d;" r.off;
+        p "    prims::bits<%d> safe_%s = pack_bits_from_bytes<%d>(buf, off, %s_bytes);"
+          (r.bytes * 8) r.name (r.bytes * 8) r.name;
+        if r.bits < r.bytes * 8 then
+          p "    extfuns_impl::%s_chan.push(prims::truncate<%d>(safe_%s));"
+            r.name r.bits r.name
+        else
+          p "    extfuns_impl::%s_chan.push(prims::unpack<%s>(safe_%s));"
+            r.name r.type_n r.name;
+        p "  }";
+      ) io_layout;
+
+      p "}";
+    )
 
 let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
    let register_sizes_ = register_layouts cu in
@@ -422,8 +444,9 @@ let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () =
        ) register_sizes_; 
        List.iter ( fun (r : reg_layout) -> 
        p " %s = pack_bits_from_bytes<%d>(%s, %d, %d);" r.name (r.bytes * 8) n_seed_buf r.off r.bytes; (* safe bit conversion *)
-       ) register_sizes_ );
-  p_buffer assign_val_buf
+       ) register_sizes_ ;
+       nl (); 
+  p_buffer assign_val_buf )
        
 
 let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () = 
@@ -462,6 +485,7 @@ let str_extfuns (name : string) (cout : Cpp.cpp_output_t) () : unit  =
     match r.io with
     | Input -> p" auto %s(bits<%d> ready);" r.name (typ_sz r.argtyp) (* probably not generic enough*)
     | Output -> p "bits<%d> %s(bits<%d> v);" (typ_sz r.rettyp) r.name (typ_sz r.argtyp)
+    | Function -> () 
       ) (io_layouts cout)
   ; p "};"
 
@@ -469,7 +493,8 @@ let channel_macros (io: io) () =
   let (arguments, p_or_s) = ("name, width, storage", "stored_t") in 
   let s_io = match io with 
     | Input -> "input"
-    | Output -> "output" in
+    | Output -> "output" 
+    | Function -> failwith "should not generate channel macros for functions" in
   p "#define DEF_%s_CHANNEL(%s) \\" (String.uppercase_ascii s_io) arguments; 
   p " %s_channel_fifo<%s::name##_%s> %s::name##_chan;" s_io n_extfuns_impl p_or_s n_extfuns_impl; 
   p "EXT_%sS(DEF_%s_CHANNEL)" (String.uppercase_ascii s_io) (String.uppercase_ascii s_io);
@@ -486,8 +511,9 @@ let io_layout  = io_layouts cout in
                   p "  return p;" )
     | Output -> p_fn ~typ:"inline bits<1>" ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "bits<%d> v" (typ_sz r.argtyp)) (fun () ->
                   p "  %s_chan.push(static_cast<%s_stored_t>(v));" r.name r.name;
-                  p "  return bits<1>::mk(true);"
-    ) ) io_layout 
+                  p "  return bits<1>::mk(true);")
+    | Function -> ()
+  ) io_layout 
 
 let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () =
   let dump_state = with_output_to_buffer (state_dump_fn cu cout) in 
@@ -537,9 +563,9 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
   
 
 
-let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit = 
+let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () : unit = 
   let p_static_seed = with_output_to_buffer h_static_seed_file in
-  let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in) in
+  let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in cout) in
   let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
   p_fn ~typ:"int" ~name:"main" ~args:"int argc, char **argv" (fun () ->
     nl ();  
@@ -581,7 +607,6 @@ let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) 
     let preamble_buf = with_output_to_buffer (h_preamble modname cpp_in) in 
     let description_buf = with_output_to_buffer (h_description modname) in
     let registers_buf = with_output_to_buffer (h_registers cpp_in) in 
-    (* let assert_fn_buf = with_output_to_buffer assert_fn in *)
     let inspect_cpp_out = with_output_to_buffer (h_inspect_cpp_out cpp_out) in
     let macros = with_output_to_buffer (include_macros cpp_in cpp_out) in
     let ns_harness_buf = with_output_to_buffer (ns_harness harness_ns cpp_in cpp_out) in
@@ -592,7 +617,7 @@ let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) 
     p_buffer registers_buf;
     p_buffer ns_harness_buf;
     nl (); 
-    h_main modname cpp_in ()
+    h_main modname cpp_in cpp_out ()
 
 let write_harness_cpp (target_dpath : string) (cpp_out :Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t): unit =
   let fpath = Filename.concat target_dpath harness_cpp_fname in

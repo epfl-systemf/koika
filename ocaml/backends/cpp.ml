@@ -1483,7 +1483,7 @@ them before writing to the registers.\n"
     
     let assert_body (n_assert_fn : string) () = 
        sprintf "if (%s) {
-            if (!%s(snapshot())) {
+            if (!%s(*this)) {
               if (abort_on_failure) std::abort(); 
               return *this; 
             }
@@ -1494,6 +1494,7 @@ them before writing to the registers.\n"
           p_cycle_loop (fun () ->
               p "%s();" cycle;
               nl (); 
+              p "snapshot_history.push_back(snapshot());";
               p "%s" assert_pred);
               p "%s" assert_final; 
           p "return *this;") in
@@ -1541,7 +1542,7 @@ them before writing to the registers.\n"
         iter_sep nl p_rule hpp.cpp_rules;
         nl ();
         p_iffuzzer (fun () ->
-            p "using assert_pred_t = bool(*)(const snapshot_t&);";
+            p "using assert_pred_t = bool(*)(const %s&);" hpp.cpp_classname;
             p "assert_pred_t %s = nullptr;" assert_n;
             p "assert_pred_t %s = nullptr;" assert_final;
             p "std::vector<snapshot_t> snapshot_history;");
