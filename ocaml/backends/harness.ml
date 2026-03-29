@@ -132,16 +132,33 @@ let contains s1 s2 =
     false
   with Exit -> true
   
-let io_layouts (cout : Cpp.cpp_output_t) : io_layout list =
+
+let internal_by_ffi_name (graph : Cuttlebone.Graphs.circuit_graph) =
+  let tbl = Hashtbl.create 16 in
+  List.iter
+    (fun node ->
+      match node.Hashcons.node with
+      | Cuttlebone.Graphs.CExternal { f; internal; _ } ->
+          Hashtbl.replace tbl f.ffi_name internal
+      | _ -> ())
+    graph.graph_nodes;
+  tbl
+
+let io_layouts (cout : Cpp.cpp_output_t)  (graph: Cuttlebone.Graphs.circuit_graph)  : io_layout list =
+  let internal_tbl = internal_by_ffi_name graph in
   let (_final_off, acc_rev) =
     List.fold_left
       (fun (off, acc) ffi ->
          let name = ffi.ffi_name in
+          let is_internal =
+           match Hashtbl.find_opt internal_tbl name with
+           | Some b -> b
+           | None -> false
+         in
          let io =
-           if contains name "input" || contains name "in"
-           then Input
-           else if contains name "output" || contains name "out" then Output
-           else Function
+           if is_internal then Function
+           else if contains name "input" || contains name "in" then Input
+           else Output
          in
          let typ = if io = Input then ffi.ffi_rettype else ffi.ffi_argtype in
          let type_n = Cpp.cpp_type_of_type cout.co_program_info typ in
@@ -228,10 +245,10 @@ let macro_var_io (name : string) (registers : 'a list)
   in
   aux registers
 
-let include_macros (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () = 
+let include_macros (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) graph () = 
   let all_registers = all_register_layouts cu in
   let val_reisters = register_layouts cu in 
-  let io_regs = io_layouts cout in
+  let io_regs = io_layouts cout graph in
   let input_io = List.filter (fun r -> r.io = Input) io_regs in
   let output_io = List.filter (fun r -> r.io = Output) io_regs in
   macro_variables "ALL_REGISTERS" all_registers ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) ();
@@ -323,11 +340,16 @@ let h_static_queue_dump () : unit =
   )
 
 
-let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () : unit = 
-  let io_layouts_ = List.filter (fun r -> r.io = Input) (io_layouts cout) in
-  let total_input_size = List.fold_left (fun acc (r : io_layout) -> acc + r.bytes) 0 io_layouts_ in (* could I just use last offset of register_sizes + last byte value ?*)
-  p "// Total input size: %d bytes" total_input_size; 
-  p "   const std::size_t one_input =%d; " total_input_size; 
+let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t)  graph () : unit = 
+  let io_layouts_ = List.filter (fun r -> r.io = Input) (io_layouts cout graph) in
+  let reg_layouts_ = (register_layouts cu) in
+  let total_input_size_io = List.fold_left (fun acc (r : io_layout) -> acc + r.bytes) 0 io_layouts_ in (* could I just use last offset of register_sizes + last byte value ?*)
+  let total_input_size_reg = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 reg_layouts_ in
+  p "// Total input size IO: %d bytes" total_input_size_io; 
+  p "   const std::size_t one_input_io =%d; " total_input_size_io; 
+  p "// Total input size REG: %d bytes" total_input_size_reg; 
+  p "   const std::size_t one_input_reg =%d; " total_input_size_reg; 
+  p "  const std::size_t one_input = 1 ? one_input_io : one_input_reg; // for now just use io size, later can make this smarter and support both or either " ;
   p "   const std::size_t %s_size = %s.size();" n_seed_buf n_seed_buf;
   p "   if (%s_size < one_input) return 0; " n_seed_buf; 
   nl (); 
@@ -400,8 +422,8 @@ let dump_bits () =
       p "  std::fprintf(out, \"%%s[%%d] = 0x%%08x\\n\", name, width, (unsigned)packed.v);";
     )
  
-let set_inputs (cout : Cpp.cpp_output_t) () : unit =
-  let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout) in
+let set_inputs (cout : Cpp.cpp_output_t) graph () : unit =
+  let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout graph) in
   p_fn ~typ:"static void" ~name:n_set_inputs_fn
     ~args:("const std::vector<uint8_t>& buf, const std::size_t " ^ nSeedPairs)
     (fun () ->
@@ -449,7 +471,7 @@ let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () =
   p_buffer assign_val_buf )
        
 
-let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () = 
+let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) graph () = 
   p_fn ~typ:"static void " ~name:fn_dump_state ~args:"const char* label, const state_t& st" (fun () ->
     p "  FILE* out = std::fopen(CrashLogPath.c_str(), \"a\");";
     p "  if (!out) {";
@@ -463,16 +485,17 @@ let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t)
     p "  ALL_REGISTERS(DUMP_FIELD)";
     p "#undef DUMP_FIELD";
     nl (); 
+    let io_layout = List.filter (fun r -> r.io != Function) (io_layouts cout graph) in
     List.iter ( fun r -> 
       p " dump_queue_hex(out, \"extfuns %s queue\", \" %s \",  %s::%s_chan.q, %d);" r.name r.name n_extfuns_impl r.name r.bits
-      )  (io_layouts cout);
+      )  (io_layout);
     nl (); 
     p "  if (out != stderr) {";
     p "    std::fclose(out);";
     p "  }";
   )
 
-let str_extfuns (name : string) (cout : Cpp.cpp_output_t) () : unit  =
+let str_extfuns (name : string) (cout : Cpp.cpp_output_t) graph () : unit  =
  p " struct %s {" name;
  nl ();
   p "    EXT_INPUTS(HARNESS_DECL_INPUT_CHANNEL)";
@@ -486,7 +509,7 @@ let str_extfuns (name : string) (cout : Cpp.cpp_output_t) () : unit  =
     | Input -> p" auto %s(bits<%d> ready);" r.name (typ_sz r.argtyp) (* probably not generic enough*)
     | Output -> p "bits<%d> %s(bits<%d> v);" (typ_sz r.rettyp) r.name (typ_sz r.argtyp)
     | Function -> () 
-      ) (io_layouts cout)
+      ) (io_layouts cout graph)
   ; p "};"
 
 let channel_macros (io: io) () = 
@@ -500,8 +523,8 @@ let channel_macros (io: io) () =
   p "EXT_%sS(DEF_%s_CHANNEL)" (String.uppercase_ascii s_io) (String.uppercase_ascii s_io);
   p "#undef DEF_%s_CHANNEL" (String.uppercase_ascii s_io)
 
-let channel_func(cout : Cpp.cpp_output_t) () : unit= 
-let io_layout  = io_layouts cout in
+let channel_func(cout : Cpp.cpp_output_t) graph() : unit= 
+let io_layout  = io_layouts cout graph in
   List.iter (fun r ->
     match r.io with   
     | Input -> 
@@ -515,17 +538,17 @@ let io_layout  = io_layouts cout in
     | Function -> ()
   ) io_layout 
 
-let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () =
-  let dump_state = with_output_to_buffer (state_dump_fn cu cout) in 
+let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) (pg) () =
+  let dump_state = with_output_to_buffer (state_dump_fn cu cout pg) in 
   let set_init_fn_buf = with_output_to_buffer (set_init_fn cu) in
   let h_sim_buf = with_output_to_buffer (h_sim_setup cout.co_modname) in
   let p_decode_fn = with_output_to_buffer decode_fn in
   let dump_bits_fn = with_output_to_buffer dump_bits in
-  let str_extfuns_fn = with_output_to_buffer (str_extfuns n_extfuns_impl cout) in
+  let str_extfuns_fn = with_output_to_buffer (str_extfuns n_extfuns_impl cout pg) in
   let channel_macro_in = with_output_to_buffer (channel_macros Input) in
   let channel_macro_out = with_output_to_buffer (channel_macros Output) in
-  let channel_func_buf = with_output_to_buffer (channel_func cout) in
-  let set_inputs_buf = with_output_to_buffer (set_inputs cout) in
+  let channel_func_buf = with_output_to_buffer (channel_func cout pg) in
+  let set_inputs_buf = with_output_to_buffer (set_inputs cout pg) in
   let pack_bb_buf = with_output_to_buffer (pack_bits_from_bytes cout) in
   let dump_queue = with_output_to_buffer h_static_queue_dump in
    p "namespace %s {" name;
@@ -563,9 +586,9 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
   
 
 
-let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) () : unit = 
+let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) pg () : unit = 
   let p_static_seed = with_output_to_buffer h_static_seed_file in
-  let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in cout) in
+  let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in cout pg) in
   let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
   p_fn ~typ:"int" ~name:"main" ~args:"int argc, char **argv" (fun () ->
     nl ();  
@@ -602,14 +625,14 @@ let h_inspect_cpp_out (cpp_out : Cpp.cpp_output_t) () : unit =
     p "//  - Register %s : %s" name typ
   ) cpp_out.co_register_sigs;
   nl ()
-let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
+let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (pkg_graph) () =
     let modname = cpp_out.co_modname in
     let preamble_buf = with_output_to_buffer (h_preamble modname cpp_in) in 
     let description_buf = with_output_to_buffer (h_description modname) in
     let registers_buf = with_output_to_buffer (h_registers cpp_in) in 
     let inspect_cpp_out = with_output_to_buffer (h_inspect_cpp_out cpp_out) in
-    let macros = with_output_to_buffer (include_macros cpp_in cpp_out) in
-    let ns_harness_buf = with_output_to_buffer (ns_harness harness_ns cpp_in cpp_out) in
+    let macros = with_output_to_buffer (include_macros cpp_in cpp_out pkg_graph) in
+    let ns_harness_buf = with_output_to_buffer (ns_harness harness_ns cpp_in cpp_out pkg_graph) in
     p_buffer inspect_cpp_out;
     p_buffer preamble_buf;
     p_buffer description_buf; 
@@ -617,14 +640,14 @@ let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) 
     p_buffer registers_buf;
     p_buffer ns_harness_buf;
     nl (); 
-    h_main modname cpp_in cpp_out ()
+    h_main modname cpp_in cpp_out pkg_graph ()
 
-let write_harness_cpp (target_dpath : string) (cpp_out :Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t): unit =
+let write_harness_cpp (target_dpath : string) (cpp_out :Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (pkg_graph) : unit =
   let fpath = Filename.concat target_dpath harness_cpp_fname in
-  let out_buf = with_output_to_buffer (h_cpp cpp_out cpp_in) in
-  with_output_to_file fpath Buffer.output_buffer out_buf
+  let out_buf = with_output_to_buffer (h_cpp cpp_out cpp_in pkg_graph) in
+  with_output_to_file fpath Buffer.output_buffer out_buf 
 
   
-let main target_dpath (cpp_out :Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t)  =
-  write_harness_cpp target_dpath cpp_out cpp_in
+let main target_dpath (cpp_out :Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (pkg_graph) =
+  write_harness_cpp target_dpath cpp_out cpp_in pkg_graph
  

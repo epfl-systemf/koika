@@ -98,7 +98,8 @@ let run_backend' (backend: backend) cnf pkg =
   | `Harness -> 
       let cpp_out = Lazy.force pkg.pkg_cpp in
       let  Pack_cpp_input cpp_in = Lazy.force pkg.pkg_cpp_in in
-      Backends.Harness.main cnf.cnf_dst_dpath cpp_out cpp_in
+      let graph = Lazy.force pkg.pkg_graph in
+      Backends.Harness.main cnf.cnf_dst_dpath cpp_out cpp_in graph
   | (`Hpp | `Cpp | `Opt) as kd ->
      let cpp = Lazy.force pkg.pkg_cpp in
      Backends.Cpp.write_output cnf.cnf_dst_dpath kd cpp
