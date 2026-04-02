@@ -96,6 +96,8 @@ type io_layout = {
   typ  : typ; 
   rettyp : typ; 
   argtyp : typ;
+  rettyp_n: string; 
+  argtyp_n: string;
   bits : int;
   bytes: int;
   off  : int;
@@ -157,16 +159,18 @@ let io_layouts (cout : Cpp.cpp_output_t)  (graph: Cuttlebone.Graphs.circuit_grap
          in
          let io =
            if is_internal then Function
-           else if contains name "input" || contains name "in" then Input
-           else Output
+           else if contains name "output" || contains name "out" then Output
+           else Input
          in
          let typ = if io = Input then ffi.ffi_rettype else ffi.ffi_argtype in
          let type_n = Cpp.cpp_type_of_type cout.co_program_info typ in
          let rettyp = ffi.ffi_rettype in
          let argtyp = ffi.ffi_argtype in
+         let rettyp_n = Cpp.cpp_type_of_type cout.co_program_info rettyp in
+         let argtyp_n = Cpp.cpp_type_of_type cout.co_program_info argtyp in
          let bits = typ_sz typ in
          let bytes = (bits + 7) / 8 in
-         let entry = { name; io; typ; type_n; rettyp; argtyp; bits; bytes; off} in
+         let entry = { name; io; typ; type_n; rettyp; argtyp; rettyp_n; argtyp_n; bits; bytes; off} in
          let next_off =
            match io with
            | Input -> off + bytes
@@ -238,9 +242,9 @@ let macro_var_io (name : string) (registers : 'a list)
   p "#define %s(X) \\" name;
   let rec aux = function
     | [] -> ()
-    | [r] -> p "   X(%s, %d, %s)" (get_name r) (get_bits r) r.type_n; (* needs fixing won't generalize*)
+    | [r] -> p "   X(%s, %s, %s)" (get_name r) r.argtyp_n r.rettyp_n; (* needs fixing won't generalize*)
     | r :: rs ->
-        p "   X(%s, %d,  %s) \\" (get_name r) ( get_bits r) r.type_n;  (* needs fixing won't generalize*)
+        p "   X(%s, %s,  %s) \\" (get_name r) r.argtyp_n r.rettyp_n;  (* needs fixing won't generalize*)
         aux rs
   in
   aux registers
@@ -364,7 +368,10 @@ let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
                       p " %s.%s = prims::truncate<%d>(%s);" n_sim_init r.name r.bits r.name
   else
      p " %s.%s = prims::bits<%d>::mk(%s);" n_sim_init r.name r.bits r.name
-    |  _ -> p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " n_sim_init r.name n_sim_init r.name r.name (* is this sufficient ?*)
+    |  _ -> if r.bits < r.bytes * 8 then 
+                      p " %s.%s = prims::unpack<decltype(%s.%s)>(prims::truncate<%d>(%s)); " n_sim_init r.name n_sim_init r.name r.bits r.name
+  else
+      p " %s.%s = prims::unpack<decltype(%s.%s)>(%s); " n_sim_init r.name n_sim_init r.name r.name (* is this sufficient ?*)
   ) register_sizes_
 
 let pack_bits_from_bytes (cout : Cpp.cpp_output_t) () : unit =
@@ -443,11 +450,23 @@ let set_inputs (cout : Cpp.cpp_output_t) graph () : unit =
       List.iter (fun r ->
         p "  {";
         p "    const std::size_t off = base_off + %d;" r.off;
+        match r.typ with 
+        | Bits_t _ ->
         p "    prims::bits<%d> safe_%s = pack_bits_from_bytes<%d>(buf, off, %s_bytes);"
           (r.bytes * 8) r.name (r.bytes * 8) r.name;
         if r.bits < r.bytes * 8 then
           p "    extfuns_impl::%s_chan.push(prims::truncate<%d>(safe_%s));"
             r.name r.bits r.name
+        else
+          p "    extfuns_impl::%s_chan.push(prims::unpack<%s>(safe_%s));"
+            r.name r.type_n r.name;
+           p "  }";
+        | _ -> 
+          p "    prims::bits<%d> safe_%s = pack_bits_from_bytes<%d>(buf, off, %s_bytes);"
+          (r.bytes * 8) r.name (r.bytes * 8) r.name;
+        if r.bits < r.bytes * 8 then
+          p "    extfuns_impl::%s_chan.push(prims::unpack<%s>(prims::truncate<%d>(safe_%s)));"
+            r.name r.type_n r.bits r.name
         else
           p "    extfuns_impl::%s_chan.push(prims::unpack<%s>(safe_%s));"
             r.name r.type_n r.name;
@@ -506,8 +525,8 @@ let str_extfuns (name : string) (cout : Cpp.cpp_output_t) graph () : unit  =
   )
   ; List.iter (fun (r : io_layout) -> 
     match r.io with
-    | Input -> p" auto %s(bits<%d> ready);" r.name (typ_sz r.argtyp) (* probably not generic enough*)
-    | Output -> p "bits<%d> %s(bits<%d> v);" (typ_sz r.rettyp) r.name (typ_sz r.argtyp)
+    | Input -> p" auto %s(%s ready);" r.name (r.argtyp_n) 
+    | Output -> p "%s %s(%s v);" (r.rettyp_n) r.name (r.argtyp_n)
     | Function -> () 
       ) (io_layouts cout graph)
   ; p "};"
@@ -528,11 +547,11 @@ let io_layout  = io_layouts cout graph in
   List.iter (fun r ->
     match r.io with   
     | Input -> 
-                p_fn ~typ:"inline auto" ~name:(n_extfuns_impl^"::"^r.name) ~args:"bits<1> ready" (fun () ->
+                p_fn ~typ:"inline auto" ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "%s ready" (r.argtyp_n)) (fun () ->
                   p " // ready can be ignored"; 
                   p "  const %s_stored_t p = %s_chan.pop_or_zero();" r.name r.name;
                   p "  return p;" )
-    | Output -> p_fn ~typ:"inline bits<1>" ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "bits<%d> v" (typ_sz r.argtyp)) (fun () ->
+    | Output -> p_fn ~typ:(Printf.sprintf "inline %s" (r.rettyp_n)) ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "%s v" (r.argtyp_n)) (fun () ->
                   p "  %s_chan.push(static_cast<%s_stored_t>(v));" r.name r.name;
                   p "  return bits<1>::mk(true);")
     | Function -> ()
