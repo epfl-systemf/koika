@@ -1339,6 +1339,38 @@ namespace cuttlesim {
 #endif
   } // namespace ruletrace
 
+  namespace fuzz {
+    static inline bool fail_or_continue(bool abort_on_failure) {
+      if (abort_on_failure) {
+        ruletrace::flush();
+        std::abort();
+      }
+      return false;
+    }
+
+    template <typename sim_t, typename pred_t>
+    static inline bool check_pred(const sim_t& sim,
+                                  pred_t pred,
+                                  bool abort_on_failure) {
+      if (!pred || pred(sim)) {
+        return true;
+      }
+      return fail_or_continue(abort_on_failure);
+    }
+
+    template <typename sim_t, typename rule_pred_t>
+    static inline bool check_rule_pred(const sim_t& sim,
+                                       const char* rule_name,
+                                       bool fired,
+                                       rule_pred_t pred,
+                                       bool abort_on_failure) {
+      if (!fired || !pred || pred(sim, rule_name)) {
+        return true;
+      }
+      return fail_or_continue(abort_on_failure);
+    }
+  } // namespace fuzz
+
   template<typename state_t>
   struct snapshot_t {
     state_t state;

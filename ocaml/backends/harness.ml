@@ -71,10 +71,10 @@ let h_description (modname: string) () : unit =
     p "// The harness provides an interface to set assertion predicates and run simulations.";
     nl (); 
     (* registers here how ? *)
-    p "// set_%s : to set the assertion predicate you want" Cpp.assert_n; 
+    (* p "// set_%s : to set the assertion predicate you want" Cpp.assert_n;  *)
     p "// pred must be callable of type : const(snapshot_t)& -> bool"; 
     nl(); 
-    p "// clear_%s : to clear the assertion predicate" Cpp.assert_n;
+    (* p "// clear_%s : to clear the assertion predicate" Cpp.assert_n; *)
     nl ();
     p "// %s : to run the simulation for n cycles with fuzzing support" Cpp.run_fuzz
 
