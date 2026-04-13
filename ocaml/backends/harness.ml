@@ -393,6 +393,8 @@ let pack_bits_from_bytes (cout : Cpp.cpp_output_t) () : unit =
 let replay_block_initial () = 
     p " if (replay) { ";
     p "    %s::%s = %s::%s(input_path);" harness_ns n_crashlogP harness_ns n_decode_fn;
+    p "    const std::string ruletrace_path = %s::%s + \"_ruletrace\";" harness_ns n_crashlogP; 
+    p "    setenv(\"SIM_RULETRACE_FPATH\", ruletrace_path.c_str(), 1);"; 
     p "    fprintf(stderr, \"Replaying input from %%s\\n\", input_path);"; 
     p "    %s::%s(\"Initial State\", %s);" harness_ns fn_dump_state n_sim_init;
     p "}"

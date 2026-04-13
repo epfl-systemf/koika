@@ -1263,9 +1263,81 @@ namespace cuttlesim {
     sim_metadata() :
       finished{false},
       exit_code{0},
-      exit_config{exit_info_state}
+      exit_config{exit_info_state},
+      cycle_id{0}
     {}
   };
+
+  /// # Rule-firing traces (optional)
+  ///
+  /// Enabled by setting the environment variable `SIM_RULETRACE_FPATH` to a
+  /// writable file path *before* simulation starts.
+  ///
+  /// Output format:
+  ///   #<cycle_id>\n
+  ///   <rule_name>\n
+  ///   <rule_name>\n
+  ///   ...
+  namespace ruletrace {
+#if defined(SIM_MINIMAL)
+    static inline void set_cycle(std::uint_fast64_t) {}
+    static inline void fired(const char*) {}
+    static inline void flush() {}
+#else
+    namespace internal {
+      struct state_t {
+        std::ofstream os{};
+        std::uint_fast64_t current_cycle = std::numeric_limits<std::uint_fast64_t>::max();
+        bool enabled = false;
+        bool opened_or_disabled = false;
+      };
+
+      static inline state_t& st() {
+        static state_t s{};
+        return s;
+      }
+
+      static inline void ensure_opened() {
+        auto& s = st();
+        if (s.opened_or_disabled) return;
+
+        const char* fpath = std::getenv("SIM_RULETRACE_FPATH");
+        if (!fpath || !*fpath) {
+          s.opened_or_disabled = true;
+          s.enabled = false;
+          return;
+        }
+
+        s.os.open(fpath, std::ios::out | std::ios::trunc);
+        s.enabled = s.os.good();
+        s.opened_or_disabled = true;
+      }
+    } // namespace internal
+
+    static inline void set_cycle(std::uint_fast64_t cycle_id) {
+      internal::ensure_opened();
+      auto& s = internal::st();
+      if (!s.enabled) return;
+
+      if (s.current_cycle != cycle_id) {
+        s.current_cycle = cycle_id;
+        s.os << "#" << cycle_id << "\n";
+      }
+    }
+
+    static inline void fired(const char* rule_name) {
+      internal::ensure_opened();
+      auto& s = internal::st();
+      if (!s.enabled) return;
+      s.os << (rule_name ? rule_name : "") << "\n";
+    }
+
+    static inline void flush() {
+      auto& s = internal::st();
+      if (s.enabled) s.os.flush();
+    }
+#endif
+  } // namespace ruletrace
 
   template<typename state_t>
   struct snapshot_t {
@@ -1388,6 +1460,9 @@ namespace cuttlesim {
 #define PASTE_EXPANDED_3(x0, x1, x2) PASTE_ARGS_3(x0, x1, x2)
 #define PASTE_EXPANDED_4(x0, x1, x2, x3) PASTE_ARGS_4(x0, x1, x2, x3)
 
+#define SIM_STR_IMPL(x) #x
+#define SIM_STR(x) SIM_STR_IMPL(x)
+
 // Using __VA_ARGS__ in DECL_FN and WRITE* macros lets us parse things like
 // WRITE0(reg, struct_xyz{a, b}) and DECL_FN(xyz, array<int, 4>).
 // See https://stackoverflow.com/questions/29578902/.
@@ -1434,7 +1509,8 @@ namespace cuttlesim {
      FAIL_UNLESS(PASTE_EXPANDED_3(fn, RULE_NAME, fname)(_tmp,##__VA_ARGS__)); \
      _tmp; })
 #define COMMIT() \
-  { PASTE_EXPANDED_2(commit, RULE_NAME)(); return true; }
+  { cuttlesim::ruletrace::fired(SIM_STR(RULE_NAME)); \
+    PASTE_EXPANDED_2(commit, RULE_NAME)(); return true; }
 
 #define FAIL_FAST() \
   { return false; }
@@ -1470,7 +1546,8 @@ namespace cuttlesim {
 #define WRITE1_DL(reg, ...) \
   WRITE_DL(write1, reg, (__VA_ARGS__))
 #define COMMIT_DL() \
-  { dlog.apply(Log, log); return true; }
+  { cuttlesim::ruletrace::fired(SIM_STR(RULE_NAME)); \
+    dlog.apply(Log, log); return true; }
 
 #define FAIL_DOL() \
   { dlog.apply(log, Log); return false; }
@@ -1497,7 +1574,8 @@ namespace cuttlesim {
 #define WRITE1_DOL(reg, ...) \
   WRITE_DOL(write1, reg, (__VA_ARGS__))
 #define COMMIT_DOL() \
-  { dlog.apply(Log, log); return true; }
+  { cuttlesim::ruletrace::fired(SIM_STR(RULE_NAME)); \
+    dlog.apply(Log, log); return true; }
 
 #undef _unlikely
 #undef _unoptimized
