@@ -308,7 +308,12 @@ let cuttlesim_hpp_fname =
 
 let fuzzing_library = "<cstdlib>"
 let run_fuzz = "run_fuzz"
-let assert_n = "assert_pred"
+
+let asserts_n : (string * string) list  =
+  [ ("assert_pred", "assert_pred_t");
+      ("assert_pred_final", "assert_pred_t");
+    ("assert_pred__rule", "assert_pred_rule_t") ]
+
 let assert_final = "assert_pred_final"
 
 let reconstruct_switch action =
@@ -1428,6 +1433,7 @@ them before writing to the registers.\n"
 
     let p_cycle_function pscheduler =
       p "meta.cycle_id++;";
+      p "cuttlesim::ruletrace::set_cycle(meta.cycle_id)"; (* for ruletrace*)
       p "log.rwset = Log.rwset = rwset_t{};";
       pscheduler ();
       p "strobe();" in
@@ -1454,7 +1460,7 @@ them before writing to the registers.\n"
     let run_typ =
       sprintf "_flatten %s&" hpp.cpp_classname in
 
-    let p_cycle_loop pbody =
+    let p_cycle_loop pbody  =
       p_scoped "for (std::uint_fast64_t cycle_id = 0;
                 cycle_id < ncycles && !meta.finished;
                 cycle_id++)"
@@ -1476,27 +1482,44 @@ them before writing to the registers.\n"
     let clear_assert_pred (n_assert_fn : string )() = 
       p_fn ~typ:"void" ~name:("clear_" ^ n_assert_fn) ( fun () -> 
           p "%s = nullptr;" n_assert_fn) in 
-    
-    let set_assert_pred (n_assert_fn : string) () = 
-      p_fn ~typ:"void" ~name:("set_" ^ n_assert_fn) ~args:"assert_pred_t p" (fun () ->
+  
+    let set_assert_pred (n_assert_fn : string) (t_assert_fn : string) () = 
+      p_fn ~typ:"void" ~name:("set_" ^ n_assert_fn) ~args:(t_assert_fn ^ " p") (fun () ->
           p "%s = p;" n_assert_fn) in 
     
-    let assert_body (n_assert_fn : string) () = 
-       sprintf "if (%s) {
-            if (!%s(*this)) {
-              if (abort_on_failure) std::abort(); 
-              return *this; 
-            }
-          }" n_assert_fn n_assert_fn in 
+    let check_pred (n_assert_fn : string)  = 
+       p "if (!cuttlesim::fuzz::check_pred(*this, %s, abort_on_failure)) { " n_assert_fn;
+       p "return *this;";
+       p "}" ; in 
 
-    let p_run_fuzz name cycle assert_pred assert_final = 
-      p_fn ~typ:run_typ ~name ~args:"std::uint_fast64_t ncycles, bool abort_on_failure" (fun () ->
+    let p_run_fuzz name cycle assert_pred assert_final =
+      p_fn ~typ:run_typ ~name
+        ~args:"std::uint_fast64_t ncycles, bool abort_on_failure"
+        (fun () ->
+          p_cycle_loop (fun () ->
+            p "%s();" cycle;
+            nl ();
+            p "snapshot_history.push_back(snapshot());";
+            check_pred assert_pred ); 
+          check_pred assert_final;
+          p "return *this;")
+    in
+
+    let p_trace_fuzz name cycle =
+      p_fn ~typ:run_typ ~name
+        ~args:"std::string fname, std::uint_fast64_t ncycles, bool abort_on_failure" (fun () ->
+          p "clear_snapshots();"; 
+          p "std::ofstream vcd(fname);";
+          p "state_t::vcd_header(vcd);";
+          p "state_t latest = Log.snapshot();";
+          p "latest.vcd_dumpvars(meta.cycle_id, vcd, latest, true);";
           p_cycle_loop (fun () ->
               p "%s();" cycle;
-              nl (); 
               p "snapshot_history.push_back(snapshot());";
-              p "%s" assert_pred);
-              p "%s" assert_final; 
+              p "state_t current = Log.snapshot();";
+              p "current.vcd_dumpvars(meta.cycle_id, vcd, latest, false);";
+              p "latest = current;";
+              check_pred "assert_pred");
           p "return *this;") in
 
     let p_trace name cycle =
@@ -1542,12 +1565,21 @@ them before writing to the registers.\n"
         iter_sep nl p_rule hpp.cpp_rules;
         nl ();
         p_iffuzzer (fun () ->
-            p "using assert_pred_t = bool(*)(const %s&);" hpp.cpp_classname;
-            p "assert_pred_t %s = nullptr;" assert_n;
-            p "assert_pred_t %s = nullptr;" assert_final;
-            p "std::vector<snapshot_t> snapshot_history;");
-        nl ();
+            p "using assert_pred_t = bool(*)(const %s&);" hpp.cpp_classname; (*could be improved*)
+             p "using assert_pred_rule_t = bool(*)(const %s&);" hpp.cpp_classname;
+            List.iter (fun (name, type_str) -> 
+              p "%s %s = nullptr;" type_str name) asserts_n;
+            p "std::vector<snapshot_t> snapshot_history;"; 
+            nl (); 
 
+            p "#define MODULE_PIPELINE_FUZZ_RULES(x) \\"; 
+            let nrules = List.length hpp.cpp_rules in
+            List.iteri (fun i { rl_name; _ } ->
+              let suffix = if i + 1 = nrules then "" else " \\" in
+              p "   X(\"%s\")%s" (hpp.cpp_rule_names rl_name) suffix)
+              hpp.cpp_rules
+            );
+        nl ();
         p "public:";
         p_finish ();
         nl ();
@@ -1576,16 +1608,15 @@ them before writing to the registers.\n"
             nl ();
             get_snapshots();
             nl ();
-            p_run_fuzz run_fuzz "cycle" (assert_body assert_n ()) (assert_body assert_final ()); 
+            p_run_fuzz run_fuzz "cycle" "assert_pred" "assert_pred_final";
             nl ();  
-            set_assert_pred assert_n (); 
-            nl (); 
-            clear_assert_pred assert_n (); 
-            nl ();
-            set_assert_pred assert_final (); 
-            nl (); 
-            clear_assert_pred assert_final (); 
-            nl () )) in 
+            p_trace_fuzz "run_trace_until_fail" "cycle"; 
+            List.iter (fun (name, type_str) ->
+              set_assert_pred name type_str (); 
+              nl(); 
+              clear_assert_pred name ();
+              nl ()) asserts_n 
+              )) in 
  
 
   let with_output_to_buffer (pbody: unit -> unit) =
