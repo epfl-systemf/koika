@@ -311,8 +311,7 @@ let run_fuzz = "run_fuzz"
 
 let asserts_n : (string * string) list  =
   [ ("assert_pred", "assert_pred_t");
-      ("assert_pred_final", "assert_pred_t");
-    ("assert_pred__rule", "assert_pred_rule_t") ]
+      ("assert_pred_final", "assert_pred_t")]
 
 let assert_final = "assert_pred_final"
 
@@ -1433,7 +1432,7 @@ them before writing to the registers.\n"
 
     let p_cycle_function pscheduler =
       p "meta.cycle_id++;";
-      p "cuttlesim::ruletrace::set_cycle(meta.cycle_id)"; (* for ruletrace*)
+      p "cuttlesim::ruletrace::set_cycle(meta.cycle_id); "; (* for ruletrace*)
       p "log.rwset = Log.rwset = rwset_t{};";
       pscheduler ();
       p "strobe();" in
@@ -1566,18 +1565,10 @@ them before writing to the registers.\n"
         nl ();
         p_iffuzzer (fun () ->
             p "using assert_pred_t = bool(*)(const %s&);" hpp.cpp_classname; (*could be improved*)
-             p "using assert_pred_rule_t = bool(*)(const %s&);" hpp.cpp_classname;
             List.iter (fun (name, type_str) -> 
               p "%s %s = nullptr;" type_str name) asserts_n;
             p "std::vector<snapshot_t> snapshot_history;"; 
             nl (); 
-
-            p "#define MODULE_PIPELINE_FUZZ_RULES(x) \\"; 
-            let nrules = List.length hpp.cpp_rules in
-            List.iteri (fun i { rl_name; _ } ->
-              let suffix = if i + 1 = nrules then "" else " \\" in
-              p "   X(\"%s\")%s" (hpp.cpp_rule_names rl_name) suffix)
-              hpp.cpp_rules
             );
         nl ();
         p "public:";

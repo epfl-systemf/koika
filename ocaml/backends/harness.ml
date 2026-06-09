@@ -9,11 +9,17 @@ let n_sim = "sim"
 let n_seed_buf = "buf"
 let n_set_init_fn = "set_init" 
 let n_set_inputs_fn = "set_inputs"  
+let n_set_init_and_input_fn ="set_init_and_inputs"
 let n_decode_fn = "decode_path_for"
 let n_assert_fn = "assert_fn"
 let n_assert_final = "assert_final"
 let harness_ns = "harness"
 let fn_dump_state = "dump_state"
+
+let n_mode_helper = "beak_mode"
+
+let n_InitBytes = "InitBytes"
+let n_InputBytes = "InputBytesPerCycle"
 
 let nSeedPairs = "kSeedPairs"
 
@@ -54,6 +60,8 @@ let h_preamble (modname: string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit 
     List.iter (fun lib -> p "#include %s" lib) libraries; 
     p "#include \"%s.hpp\"" modname;
     p "#include \"harness_support.hpp\"";
+    p "#include \"beak_mode.hpp\"";
+    p "#include \"assertions.hpp\"";
     nl (); 
     (match cu.cpp_extfuns with
       | None -> p "struct extfuns {};"
@@ -350,15 +358,9 @@ let input_size_calculation (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_
   let total_input_size_io = List.fold_left (fun acc (r : io_layout) -> acc + r.bytes) 0 io_layouts_ in (* could I just use last offset of register_sizes + last byte value ?*)
   let total_input_size_reg = List.fold_left (fun acc (r : reg_layout) -> acc + r.bytes) 0 reg_layouts_ in
   p "// Total input size IO: %d bytes" total_input_size_io; 
-  p "   const std::size_t one_input_io =%d; " total_input_size_io; 
+  p "   static constexpr std::size_t  %s =%d; " n_InputBytes total_input_size_io; 
   p "// Total input size REG: %d bytes" total_input_size_reg; 
-  p "   const std::size_t one_input_reg =%d; " total_input_size_reg; 
-  p "  const std::size_t one_input = 1 ? one_input_io : one_input_reg; // for now just use io size, later can make this smarter and support both or either " ;
-  p "   const std::size_t %s_size = %s.size();" n_seed_buf n_seed_buf;
-  p "   if (%s_size < one_input) return 0; " n_seed_buf; 
-  nl (); 
-  p "   const std::size_t %s = %s_size / one_input; // round down" nSeedPairs n_seed_buf;
-  p "   %s.resize(one_input * %s);" n_seed_buf nSeedPairs
+  p "   static constexpr std::size_t  %s =%d; " n_InitBytes total_input_size_reg
 
 let assign_val (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   let register_sizes_ = register_layouts cu in
@@ -408,14 +410,11 @@ let replay_block_final () =
 let h_simulator_setup (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () = 
   let replay_init = with_output_to_buffer replay_block_initial in
   let replay_final = with_output_to_buffer replay_block_final in
-  p "    %s::simulator::state_t %s = %s::simulator::initial_state();" harness_ns n_sim_init harness_ns;
-  p "    // %s::%s(%s, %s); // either init mode" harness_ns n_set_init_fn n_sim_init n_seed_buf;
-  p "    // %s::%s(%s, %s); // or input mode, TODO: implement choice smarter, later" harness_ns n_set_inputs_fn n_seed_buf nSeedPairs;
   p_buffer replay_init;
   p "    %s::simulator %s(st); " harness_ns n_sim;
   p "    %s.set_assert_pred(%s);" n_sim n_assert_fn;
   p "    %s.set_assert_pred_final(%s);" n_sim n_assert_final;
-  p "   %s.%s(%s, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz nSeedPairs; 
+  p "   %s.%s(plan.cycles, !replay); // run_fuzz is fuzzing method" n_sim Cpp.run_fuzz; 
   p_buffer replay_final
 
 
@@ -434,12 +433,12 @@ let dump_bits () =
 let set_inputs (cout : Cpp.cpp_output_t) graph () : unit =
   let io_layout = List.filter (fun r -> r.io = Input) (io_layouts cout graph) in
   p_fn ~typ:"static void" ~name:n_set_inputs_fn
-    ~args:("const std::vector<uint8_t>& buf, const std::size_t " ^ nSeedPairs)
+    ~args:("const std::vector<uint8_t>& buf, const std::size_t " ^ nSeedPairs  ^ ",const std::size_t input_offset")
     (fun () ->
       p "  extfuns_impl::clear();";
 
       List.iter (fun r ->
-        p "constexpr std::size_t %s_bytes = %d;" r.name r.bytes;
+        p "constexpr std::size_t %s_bytes = %d;" r.name r.bytes; (* probably redundant*)
       ) io_layout;
 
       let total_input_size =
@@ -447,7 +446,7 @@ let set_inputs (cout : Cpp.cpp_output_t) graph () : unit =
       in
       p "constexpr std::size_t total_bytes = %d;" total_input_size;
       p "for (std::size_t i = 0; i < %s; ++i) {" nSeedPairs;
-      p "  const std::size_t base_off = i * total_bytes;";
+      p "  const std::size_t base_off = input_offset + i * total_bytes;";
 
       List.iter (fun r ->
         p "  {";
@@ -490,7 +489,12 @@ let set_init_fn (cu: (_,_,_,_,_,_) Cpp.cpp_input_t) () =
        ) register_sizes_ ;
        nl (); 
   p_buffer assign_val_buf )
-       
+  
+let set_init_and_input_fn () : unit = 
+  p_fn ~typ:"static void " ~name:n_set_init_and_input_fn ~args:("state_t &"^n_sim_init^", const std::vector<uint8_t>& "^n_seed_buf^", const std::size_t " ^ nSeedPairs) (fun () ->
+  p "%s(%s, %s);" n_set_init_fn n_sim_init n_seed_buf; 
+  p " %s(%s, %s, %s);" n_set_inputs_fn n_seed_buf nSeedPairs n_InitBytes
+  )
 
 let state_dump_fn (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) graph () = 
   p_fn ~typ:"static void " ~name:fn_dump_state ~args:"const char* label, const state_t& st" (fun () ->
@@ -572,11 +576,15 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
   let set_inputs_buf = with_output_to_buffer (set_inputs cout pg) in
   let pack_bb_buf = with_output_to_buffer (pack_bits_from_bytes cout) in
   let dump_queue = with_output_to_buffer h_static_queue_dump in
+  let input_size_cal = with_output_to_buffer (input_size_calculation cu cout pg) in
+  let init_and_input_fn = with_output_to_buffer (set_init_and_input_fn) in
    p "namespace %s {" name;
    p "    struct extfuns_impl; ";
    p "    using extfuns_t = extfuns_impl;"; 
    p "}"; 
   p "namespace %s {" name;
+  nl (); 
+  p_buffer input_size_cal; 
   nl (); 
   p_buffer str_extfuns_fn;
   nl (); 
@@ -594,28 +602,41 @@ let ns_harness (name : string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.
   nl (); 
   p_buffer pack_bb_buf; 
   nl ();
-  p_buffer set_inputs_buf;
-  nl ();
   p_buffer dump_queue; 
   nl (); 
   p_buffer dump_state;
   nl ();
+  p_buffer set_inputs_buf;
+  nl ();
   p_buffer set_init_fn_buf;
+  nl (); 
+  p_buffer init_and_input_fn; 
   nl (); 
   p "} // namespace %s" name
 
-  
+
+
+let mode_config () : unit = 
+   p "%s::plan plan;" n_mode_helper;
+   nl (); 
+   p "if (!%s::prepare_input<%s::%s,%s::%s>(%s, plan)) {" n_mode_helper harness_ns n_InitBytes harness_ns n_InputBytes n_seed_buf; 
+   p " return 0; "; 
+   p "}"; 
+   nl (); 
+   p " %s::simulator::state_t %s = %s::simulator::initial_state();" harness_ns  n_sim_init harness_ns; 
+   nl (); 
+   p " BEAK_APPLY_FUZZ_MODE(%s, %s, %s, plan);" harness_ns n_sim_init n_seed_buf
 
 
 let h_main (_modname : string) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (cout : Cpp.cpp_output_t) pg () : unit = 
   let p_static_seed = with_output_to_buffer h_static_seed_file in
-  let input_siz_cal = with_output_to_buffer (input_size_calculation cpp_in cout pg) in
   let h_sim = with_output_to_buffer (h_simulator_setup cpp_in) in
+  let mode_config_ = with_output_to_buffer (mode_config) in
   p_fn ~typ:"int" ~name:"main" ~args:"int argc, char **argv" (fun () ->
     nl ();  
     p_buffer p_static_seed; 
     nl (); 
-    p_buffer input_siz_cal; 
+    p_buffer mode_config_; 
     nl (); 
     p_buffer h_sim;
     nl (); 
