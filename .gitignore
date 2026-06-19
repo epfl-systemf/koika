@@ -42,3 +42,4 @@ _objects/
 /.envrc
 result*
 **/dune.inc
+eval.zip
