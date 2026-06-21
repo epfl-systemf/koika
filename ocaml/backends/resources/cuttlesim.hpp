@@ -1554,7 +1554,6 @@ namespace cuttlesim {
   log.state.reg = (__VA_ARGS__)
 #define WRITE1_FAST(reg, ...) \
   log.state.reg = (__VA_ARGS__)
-
 /// ## Alternative implementations of read, write, and fail
 
 #define FAIL_DL() \

@@ -55,17 +55,18 @@ let with_output_to_buffer (pbody: unit -> unit) =
     set_buffer buf 
  
     (* COPY STOP*)
-let h_preamble (modname: string) (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit =
+let h_preamble (modname: string) () : unit =
     nl ();
     List.iter (fun lib -> p "#include %s" lib) libraries; 
     p "#include \"%s.hpp\"" modname;
     p "#include \"harness_support.hpp\"";
     p "#include \"beak_mode.hpp\"";
-    p "#include \"assertions.hpp\"";
-    nl (); 
-    (match cu.cpp_extfuns with
+    nl () 
+    (*; 
+    (match cu.cpp_extfuns with (** MOVE THIS INTO EXTFUNS_IMPL!!!**)
       | None -> p "struct extfuns {};"
-      | Some preamble -> p "%s" preamble)
+      | Some preamble -> p " "; )
+      | Some preamble -> p "%s" preamble) *)
 
 let h_sim_setup (modname : string)() : unit = 
  p "using simulator = module_%s<extfuns_t>;" modname; 
@@ -182,7 +183,7 @@ let register_layouts (cu : (_,_,_,_,_,_) Cpp.cpp_input_t) : reg_layout list =
     Array.fold_left (fun (off, acc) r ->
       let kind = cu.cpp_register_kinds r in
       match kind with
-      | Extr.Value ->
+      | Extr.Value | Extr.EHR->
           let sg = cu.cpp_register_sigs r in
           let typ = reg_type sg in
           let bits = typ_sz typ in
@@ -260,13 +261,13 @@ let macro_var_io (name : string) (registers : 'a list)
 
 let include_macros (layout: harness_layouts)() = 
   let all_registers = layout.all_regs in 
-  let val_reisters = layout.init_regs in 
+  let val_registers = layout.init_regs in 
   let io_regs = layout.io_layout_list in 
   let input_io = List.filter (fun r -> r.io = Input) io_regs in
   let output_io = List.filter (fun r -> r.io = Output) io_regs in
   macro_variables "ALL_REGISTERS" all_registers ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) ();
   nl ();
-  macro_variables "VAL_REGISTER" val_reisters ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) ();
+  macro_variables "VAL_REGISTER" val_registers ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) ();
   nl ();
   macro_var_io "EXT_INPUTS" input_io ~get_name:(fun r->r.name) ~get_bits:(fun r->r.bits) (); 
   nl ();
@@ -483,12 +484,11 @@ let set_init_fn (layout : harness_layouts) () =
    let assign_val_buf = with_output_to_buffer (assign_val layout) in
    p_fn ~typ:"static void " ~name:n_set_init_fn ~args:("state_t &"^n_sim_init^", const std::vector<uint8_t>& "^n_seed_buf) (fun () ->
        List.iter (fun (r : reg_layout) -> 
-       p "   prims::bits<%d> %s = prims::bits<%d>::mk(0);" (r.bytes * 8) r.name (r.bytes * 8); (* need to round up, is this enough ???, think we can ignore any input formatting and pass in binary directly ?  *)
-       ) register_sizes_; 
+       p "   prims::bits<%d> %s = prims::bits<%d>::mk(0);" (r.bytes * 8) r.name (r.bytes * 8); 
+       nl (); ) register_sizes_; 
        List.iter ( fun (r : reg_layout) -> 
        p " %s = pack_bits_from_bytes<%d>(%s, %d, %d);" r.name (r.bytes * 8) n_seed_buf r.off r.bytes; (* safe bit conversion *)
-       ) register_sizes_ ;
-       nl (); 
+      nl ();  ) register_sizes_ ;
   p_buffer assign_val_buf )
 
 let set_init_and_input_fn () : unit = 
@@ -521,7 +521,7 @@ let state_dump_fn (layout: harness_layouts)  () =
     p "  }";
   )
 
-let str_extfuns (name : string) (layout: harness_layouts) () : unit  =
+let str_extfuns (name : string) (layout: harness_layouts) (cin : (_,_,_,_,_,_) Cpp.cpp_input_t) () : unit  =
  p " struct %s {" name;
  nl ();
   p "    EXT_INPUTS(HARNESS_DECL_INPUT_CHANNEL)";
@@ -535,8 +535,11 @@ let str_extfuns (name : string) (layout: harness_layouts) () : unit  =
     | Input -> p" auto %s(%s ready);" r.name (r.argtyp_n) 
     | Output -> p "%s %s(%s v);" (r.rettyp_n) r.name (r.argtyp_n)
     | Function -> () 
-      ) (layout.io_layout_list)
-  ; p "};"
+      ) (layout.io_layout_list);
+  (match cin.cpp_extfuns with 
+      | None -> p "struct extfuns {};"
+      | Some preamble -> p "%s" preamble ); 
+  p "};"
 
 let channel_macros (io: io) () = 
   let (arguments, p_or_s) = ("name, width, storage", "stored_t") in 
@@ -560,18 +563,18 @@ let io_layout  = layout.io_layout_list in
                   p "  return p;" )
     | Output -> p_fn ~typ:(Printf.sprintf "inline %s" (r.rettyp_n)) ~name:(n_extfuns_impl^"::"^r.name) ~args:(Printf.sprintf "%s v" (r.argtyp_n)) (fun () ->
                   p "  %s_chan.push(static_cast<%s_stored_t>(v));" r.name r.name;
-                  p "  return bits<1>::mk(true);")
+                  p "  return %s::mk(true);" r.rettyp_n)
     | Function -> ()
   ) io_layout 
 
 
-let ns_harness (name : string) (compact_layout_info: harness_layouts ) (cout : Cpp.cpp_output_t)  () =
+let ns_harness (name : string) (compact_layout_info: harness_layouts ) (cout : Cpp.cpp_output_t) (cin : (_,_,_,_,_,_) Cpp.cpp_input_t) () =
   let dump_state = with_output_to_buffer (state_dump_fn compact_layout_info) in 
   let set_init_fn_buf = with_output_to_buffer (set_init_fn compact_layout_info) in
   let h_sim_buf = with_output_to_buffer (h_sim_setup cout.co_modname) in
   let p_decode_fn = with_output_to_buffer decode_fn in
   let dump_bits_fn = with_output_to_buffer dump_bits in
-  let str_extfuns_fn = with_output_to_buffer (str_extfuns n_extfuns_impl compact_layout_info ) in
+  let str_extfuns_fn = with_output_to_buffer (str_extfuns n_extfuns_impl compact_layout_info cin) in
   let channel_macro_in = with_output_to_buffer (channel_macros Input) in
   let channel_macro_out = with_output_to_buffer (channel_macros Output) in
   let channel_func_buf = with_output_to_buffer (channel_func compact_layout_info) in
@@ -670,21 +673,46 @@ let h_inspect_cpp_out (cpp_out : Cpp.cpp_output_t) () : unit =
   ) cpp_out.co_register_sigs;
   nl ()
 
+let debug_register_sources cu cout () : unit =
+  prerr_endline "=== cu.cpp_registers ===";
+  Array.iter (fun r ->
+    let sg = cu.cpp_register_sigs r in
+    let kind = cu.cpp_register_kinds r in
+    prerr_endline
+      (Printf.sprintf "cu: %s kind=%s"
+         sg.reg_name
+         (register_kind_to_string kind))
+  ) cu.cpp_registers;
+
+  prerr_endline "=== cout.co_register_sigs ===";
+  List.iter (fun sg ->
+    prerr_endline
+      (Printf.sprintf "cout: %s : %s"
+         sg.reg_name
+         (typ_to_string (reg_type sg)))
+  ) cout.co_register_sigs
+
 let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (pkg_graph) () =
+    let debug = with_output_to_buffer (debug_register_sources cpp_in cpp_out) in
     let modname = cpp_out.co_modname in
     let compact_layout_info = make_layouts cpp_in cpp_out pkg_graph in
-    let preamble_buf = with_output_to_buffer (h_preamble modname cpp_in) in 
+    let preamble_buf = with_output_to_buffer (h_preamble modname) in 
     let description_buf = with_output_to_buffer (h_description modname) in
     let registers_buf = with_output_to_buffer (h_registers compact_layout_info) in 
     let inspect_cpp_out = with_output_to_buffer (h_inspect_cpp_out cpp_out) in
     let macros = with_output_to_buffer (include_macros compact_layout_info) in
-    let ns_harness_buf = with_output_to_buffer (ns_harness harness_ns compact_layout_info cpp_out) in
+    let ns_harness_buf = with_output_to_buffer (ns_harness harness_ns compact_layout_info cpp_out cpp_in) in
+    p_buffer debug;
     p_buffer inspect_cpp_out;
     p_buffer preamble_buf;
     p_buffer description_buf; 
     p_buffer macros; 
     p_buffer registers_buf;
     p_buffer ns_harness_buf;
+    nl (); 
+    nl (); 
+    p "#include \"assertions.hpp\"";
+    nl (); 
     nl (); 
     h_main modname ()
 
