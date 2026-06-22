@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ========== EDIT THESE ==========
-SOURCE_DIR="/home/nora/Documents/SemProj/koika"
-DEST_DIR="riscv"      # new folder to create
-BUILD_DIR="$SOURCE_DIR/_build/default/examples/rv/rv32i.v.d"    # folder containing the source files
-IMPLEMENTATION_NAME="rv32"            # without .hpp (e.g. "collatz" -> collatz.hpp)
+SOURCE_DIR=""
+DEST_DIR=""      # new folder to create
+BUILD_DIR="$SOURCE_DIR/_build/default/examples/"    # folder containing the source files
+IMPLEMENTATION_NAME=""            # without .hpp (e.g. "collatz" -> collatz.hpp)
 # ================================
 
 if command -v realpath >/dev/null 2>&1; then
