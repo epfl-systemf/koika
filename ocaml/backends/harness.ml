@@ -673,27 +673,7 @@ let h_inspect_cpp_out (cpp_out : Cpp.cpp_output_t) () : unit =
   ) cpp_out.co_register_sigs;
   nl ()
 
-let debug_register_sources cu cout () : unit =
-  prerr_endline "=== cu.cpp_registers ===";
-  Array.iter (fun r ->
-    let sg = cu.cpp_register_sigs r in
-    let kind = cu.cpp_register_kinds r in
-    prerr_endline
-      (Printf.sprintf "cu: %s kind=%s"
-         sg.reg_name
-         (register_kind_to_string kind))
-  ) cu.cpp_registers;
-
-  prerr_endline "=== cout.co_register_sigs ===";
-  List.iter (fun sg ->
-    prerr_endline
-      (Printf.sprintf "cout: %s : %s"
-         sg.reg_name
-         (typ_to_string (reg_type sg)))
-  ) cout.co_register_sigs
-
 let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) (pkg_graph) () =
-    let debug = with_output_to_buffer (debug_register_sources cpp_in cpp_out) in
     let modname = cpp_out.co_modname in
     let compact_layout_info = make_layouts cpp_in cpp_out pkg_graph in
     let preamble_buf = with_output_to_buffer (h_preamble modname) in 
@@ -702,7 +682,6 @@ let h_cpp (cpp_out : Cpp.cpp_output_t) (cpp_in : (_,_,_,_,_,_) Cpp.cpp_input_t) 
     let inspect_cpp_out = with_output_to_buffer (h_inspect_cpp_out cpp_out) in
     let macros = with_output_to_buffer (include_macros compact_layout_info) in
     let ns_harness_buf = with_output_to_buffer (ns_harness harness_ns compact_layout_info cpp_out cpp_in) in
-    p_buffer debug;
     p_buffer inspect_cpp_out;
     p_buffer preamble_buf;
     p_buffer description_buf; 
