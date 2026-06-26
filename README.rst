@@ -1297,6 +1297,7 @@ In addition, `*_decoded_imem` dumps the instruction memory used for both cores.
 Evaluation Overview
 ~~~~~~~~~~~~
 
+```text
  prog_eval : Program Evaluation, Koika designs containing injected faults along with data, and Verilator comparison 
 │   ├── koika_designs : designs written in Koika
 │   ├── koika_eval : Koika evaluation folder
