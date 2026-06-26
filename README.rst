@@ -1293,3 +1293,17 @@ For the RISC-V setup, see `beak/evaluation/riscv_eval.zip`, in particular `riscv
 
 When running your own examples or inspecting the existing ones, the crash directory should contain the dumped rule traces for both core versions.
 In addition, `*_decoded_imem` dumps the instruction memory used for both cores.
+
+Evaluation Overview
+~~~~~~~~~~~~
+
+ prog_eval : Program Evaluation, Koika designs containing injected faults along with data, and Verilator comparison 
+│   ├── koika_designs : designs written in Koika
+│   ├── koika_eval : Koika evaluation folder
+│   └── verilator_data : Verilator evaluation data
+├── repr_eval : Representation Evalutation, for Koika and Verilator
+│   ├── koika : Koika designs and evaluation folders
+│   └── verilator : Verilator designs and evaluation data
+├── riscv_eval : RISC-V evaluation, evaluation folders and Koika designs used
+│   ├── data : evaluation folders
+│   └── koika_designs : Koika designs
