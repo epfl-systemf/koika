@@ -1296,15 +1296,15 @@ In addition, `*_decoded_imem` dumps the instruction memory used for both cores.
 
 Evaluation Overview
 ~~~~~~~~~~~~
-
 ```text
- prog_eval : Program Evaluation, Koika designs containing injected faults along with data, and Verilator comparison 
-│   ├── koika_designs : designs written in Koika
-│   ├── koika_eval : Koika evaluation folder
-│   └── verilator_data : Verilator evaluation data
-├── repr_eval : Representation Evalutation, for Koika and Verilator
-│   ├── koika : Koika designs and evaluation folders
-│   └── verilator : Verilator designs and evaluation data
-├── riscv_eval : RISC-V evaluation, evaluation folders and Koika designs used
-│   ├── data : evaluation folders
-│   └── koika_designs : Koika designs
+.
+├── prog_eval/                 Program evaluation with injected faults
+│   ├── koika_designs/         Kôika designs used for the evaluation
+│   ├── koika_eval/            Kôika evaluation folders
+│   └── verilator_data/        Verilator comparison data
+├── repr_eval/                 Representation evaluation for Kôika and Verilator
+│   ├── koika/                 Kôika designs and evaluation folders
+│   └── verilator/             Verilator designs and evaluation data
+└── riscv_eval/                RISC-V evaluation
+    ├── data/                  Evaluation folders
+    └── koika_designs/         Kôika designs used in the evaluation
